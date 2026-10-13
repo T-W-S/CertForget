@@ -7,6 +7,10 @@ out-tsc
 *.tsbuildinfo
 .expo
 .expo-shared
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
 
 # dependencies
 node_modules

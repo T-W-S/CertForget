@@ -1,45 +1,58 @@
-# [Project name]
+# CertForge_t
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A self-hosted certificate workbench for inspecting X.509 files, comparing public/private keys, and converting certificate and PKCS#12 formats.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `docker compose up --build` — build and run the self-hosted app
+- `docker compose down` — stop and remove the containers
+- `python -m pytest` from `artifacts/certforge-t/backend/` — run the FastAPI tests
+- `pnpm --filter @workspace/certforge-t run typecheck` — typecheck the React/TypeScript app
+- `pnpm --filter @workspace/certforge-t run dev` — run the frontend preview
+- Replit development also has a managed FastAPI service on `/certforge-api`.
+- Optional environment: copy `.env.example` to `.env` to set the host port, upload limit, or OpenSSL timeout.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Frontend: React, TypeScript, Vite
+- Backend: Python FastAPI with Pydantic validation
+- Crypto: OpenSSL CLI and Python `cryptography`
+- Deployment: Docker Compose, unprivileged Nginx frontend, FastAPI backend
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/certforge-t/src/` — React interface and typed API client
+- `artifacts/certforge-t/backend/main.py` — FastAPI app, health route, and error handlers
+- `artifacts/certforge-t/backend/routers/` — certificate and PKCS#12 endpoints
+- `artifacts/certforge-t/backend/crypto_operations.py` — reusable cryptography/OpenSSL operations
+- `artifacts/certforge-t/backend/test_main.py` — API and cryptographic tests
+- `artifacts/certforge-t/backend/requirements.txt` — backend runtime dependencies
+- `docker-compose.yml` — self-hosted frontend/API deployment
+- `README.md` — setup, API, testing, and operational notes
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Uploaded files are request-scoped; the app intentionally has no database or certificate storage.
+- The API exposes a fixed set of cryptographic operations. User input is never interpreted as a shell command.
+- Passphrases travel to OpenSSL via file descriptors; private key inputs are staged in permission-restricted temporary storage and removed after processing.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Certificate and key uploads for inspection, matching, and conversion
+- X.509 details and SHA-256 fingerprint inspection
+- Private-key and public-key matching against a certificate
+- PEM/DER certificate conversion and PKCS#12/PFX import/export
+- Live backend/OpenSSL health status and informational command previews
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- The requested visual direction is a professional dark cybersecurity workbench with purple accents and subtle glassmorphism.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The React API client uses `/certforge-api`; Docker Nginx and the managed preview route this prefix to FastAPI.
+- The initial app does not save uploaded certificates, private keys, passphrases, or generated files.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- `README.md` documents local Docker Compose use and API tests.

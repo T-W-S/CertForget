@@ -1,0 +1,41 @@
+kind = "web"
+previewPath = "/"
+title = "CertForge_t"
+description = "A self-hosted cryptographic certificate workbench for inspecting certificates, validating key pairs, and converting certificate and PKCS#12 formats using a FastAPI backend, OpenSSL, and Python cryptography."
+version = "1.0.0"
+id = "artifacts/certforge-t"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23403
+
+[services.development]
+run = "pnpm --filter @workspace/certforge-t run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/certforge-t", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/certforge-t/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23403"
+BASE_PATH = "/"
+
+[[services]]
+name = "api"
+paths = ["/certforge-api"]
+localPort = 8000
+
+[services.development]
+run = "PYTHONPATH=backend:artifacts/certforge-t/backend python -m uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log"
+
+[services.env]
+PORT = "8000"
+MAX_UPLOAD_BYTES = "10485760"
+OPENSSL_TIMEOUT_SECONDS = "10"
