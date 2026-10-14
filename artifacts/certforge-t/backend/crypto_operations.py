@@ -7,12 +7,13 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from cryptography import x509
 from cryptography.exceptions import UnsupportedAlgorithm
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives.serialization.base import (
     load_der_private_key,
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives.serialization.base import (
 from fastapi import UploadFile
 
 from api_errors import WorkbenchError
+from schemas import CertificateExtensionsResponse, CertificateInspectionResponse
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
 OPENSSL_TIMEOUT_SECONDS = int(os.getenv("OPENSSL_TIMEOUT_SECONDS", "10"))
@@ -126,6 +128,10 @@ def format_name(name: x509.Name) -> str:
     )
 
 
+def format_fingerprint(contents: bytes) -> str:
+    return ":".join(f"{byte:02X}" for byte in contents)
+
+
 def key_details(public_key: object) -> tuple[str, int | None]:
     key_name = type(public_key).__name__
     if key_name == "_RSAPublicKey":
@@ -144,6 +150,141 @@ def key_details(public_key: object) -> tuple[str, int | None]:
         return "X448", None
     return key_name.removeprefix("_").removesuffix("PublicKey"), getattr(
         public_key, "key_size", None
+    )
+
+
+def summarize_extensions(
+    extensions: x509.Extensions,
+) -> CertificateExtensionsResponse:
+    key_usage_names = {
+        "digital_signature": "Digital signature",
+        "content_commitment": "Content commitment",
+        "key_encipherment": "Key encipherment",
+        "data_encipherment": "Data encipherment",
+        "key_agreement": "Key agreement",
+        "key_cert_sign": "Certificate signing",
+        "crl_sign": "CRL signing",
+    }
+    try:
+        key_usage_extension = extensions.get_extension_for_class(x509.KeyUsage).value
+        key_usage = [
+            label
+            for attribute, label in key_usage_names.items()
+            if getattr(key_usage_extension, attribute)
+        ]
+        if key_usage_extension.key_agreement:
+            if key_usage_extension.encipher_only:
+                key_usage.append("Encipher only")
+            if key_usage_extension.decipher_only:
+                key_usage.append("Decipher only")
+    except x509.ExtensionNotFound:
+        key_usage = []
+
+    try:
+        extended_key_usage_extension = extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+        extended_key_usage = [
+            oid._name or oid.dotted_string for oid in extended_key_usage_extension
+        ]
+    except x509.ExtensionNotFound:
+        extended_key_usage = []
+
+    try:
+        constraints = extensions.get_extension_for_class(x509.BasicConstraints).value
+        basic_constraints = (
+            f"CA:{'TRUE' if constraints.ca else 'FALSE'}"
+            + (
+                f", path length: {constraints.path_length}"
+                if constraints.path_length is not None
+                else ""
+            )
+        )
+    except x509.ExtensionNotFound:
+        basic_constraints = None
+
+    try:
+        ski = extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
+        subject_key_identifier = format_fingerprint(ski)
+    except x509.ExtensionNotFound:
+        subject_key_identifier = None
+
+    try:
+        aki_value = extensions.get_extension_for_class(
+            x509.AuthorityKeyIdentifier
+        ).value.key_identifier
+        authority_key_identifier = (
+            format_fingerprint(aki_value) if aki_value is not None else None
+        )
+    except x509.ExtensionNotFound:
+        authority_key_identifier = None
+
+    return CertificateExtensionsResponse(
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+        basic_constraints=basic_constraints,
+        subject_key_identifier=subject_key_identifier,
+        authority_key_identifier=authority_key_identifier,
+    )
+
+
+def format_sans(extensions: x509.Extensions) -> list[str]:
+    try:
+        san_extension = extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+    except x509.ExtensionNotFound:
+        return []
+    return sorted(
+        {
+            *(f"DNS:{value}" for value in san_extension.get_values_for_type(x509.DNSName)),
+            *(f"IP:{value}" for value in san_extension.get_values_for_type(x509.IPAddress)),
+            *(f"EMAIL:{value}" for value in san_extension.get_values_for_type(x509.RFC822Name)),
+            *(
+                f"URI:{value}"
+                for value in san_extension.get_values_for_type(
+                    x509.UniformResourceIdentifier
+                )
+            ),
+        }
+    )
+
+
+def inspect_certificate_content(contents: bytes) -> CertificateInspectionResponse:
+    certificate = load_certificate(contents)
+    confirm_openssl_certificate_read(contents)
+    now = datetime.now(timezone.utc)
+    not_before = certificate.not_valid_before_utc
+    not_after = certificate.not_valid_after_utc
+    public_key = certificate.public_key()
+    public_key_algorithm, public_key_size = key_details(public_key)
+    signature_algorithm = certificate.signature_algorithm_oid._name or (
+        certificate.signature_algorithm_oid.dotted_string
+    )
+    try:
+        signature_hash = certificate.signature_hash_algorithm
+        if signature_hash is not None:
+            signature_algorithm = (
+                f"{signature_algorithm} with {signature_hash.name.upper()}"
+            )
+    except UnsupportedAlgorithm:
+        pass
+
+    return CertificateInspectionResponse(
+        subject=format_name(certificate.subject),
+        issuer=format_name(certificate.issuer),
+        serial_number=format(certificate.serial_number, "X"),
+        not_before=not_before.isoformat(),
+        not_after=not_after.isoformat(),
+        is_valid_now=not_before <= now <= not_after,
+        days_until_expiry=(not_after - now).days,
+        sans=format_sans(certificate.extensions),
+        signature_algorithm=signature_algorithm,
+        public_key_algorithm=public_key_algorithm,
+        public_key_size=public_key_size,
+        sha256_fingerprint=format_fingerprint(certificate.fingerprint(hashes.SHA256())),
+        openssl_version=openssl_version(),
+        extensions=summarize_extensions(certificate.extensions),
     )
 
 

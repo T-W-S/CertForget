@@ -6,6 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from api_errors import WorkbenchError
 from crypto_operations import openssl_version
 from routers.certificates import router as certificates_router
+from routers.csrs import router as csrs_router
 from routers.pkcs12 import router as pkcs12_router
 from schemas import HealthResponse
 
@@ -78,4 +79,5 @@ def health() -> HealthResponse:
 
 
 app.include_router(certificates_router)
+app.include_router(csrs_router)
 app.include_router(pkcs12_router)

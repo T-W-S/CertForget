@@ -1,0 +1,483 @@
+# CertForge_t — Phase 2: Certificate Creation, Self-Signed Certificates and CSR Workflows
+
+## Project context
+
+We are continuing development of the existing CertForge_t application. This is not a new project.
+
+The application already has a modern dark-purple UI and currently includes:
+- Dashboard and runtime health status.
+- Certificate inspection.
+- Certificate/private-key matching.
+- PEM/DER conversion tools.
+- PKCS#12-related format operations.
+- A frontend connected to a self-hosted API.
+- Docker deployment.
+
+The current UI is already satisfactory. Preserve its visual identity, layout, typography, colours, rounded cards, subtle glass effects, navigation, responsive behaviour and existing functionality.
+
+Your task is to inspect the existing codebase and implement the next phase: certificate creation and Certificate Signing Request (CSR) workflows.
+
+IMPORTANT: The GitHub repository contains Docker build fixes that were applied after resolving issues during a local Docker build. Inspect the current repository before changing anything. Treat the current GitHub code as the source of truth for those fixes.
+
+## 1. Preserve the existing Docker fixes
+
+The following changes have already been made and must not be accidentally reverted.
+
+### A. pnpm build-script approval
+
+The root `pnpm-workspace.yaml` contains:
+
+```yaml
+allowBuilds:
+  esbuild: true
+```
+
+Preserve this configuration and ensure it remains compatible with the project's existing pnpm version and workspace configuration.
+
+Do not overwrite the file with an older version or remove this setting without a demonstrated technical reason.
+
+### B. Docker build context
+
+The root `.dockerignore` includes:
+
+```text
+.pnpm-store
+```
+
+Preserve this exclusion. Keep existing exclusions such as `**/node_modules`.
+
+Do not copy the local pnpm package store or local installed dependencies into the Docker build context.
+
+### C. Frontend build image
+
+`artifacts/certforge-t/Dockerfile.web` currently uses:
+
+```dockerfile
+FROM node:22-slim AS build
+```
+
+Preserve the Debian-based `node:22-slim` build stage. It resolved a Rollup native-module issue encountered with the Alpine/musl build environment.
+
+Do not switch back to Alpine unless you have reproduced the problem, verified a proper solution, and demonstrated that the replacement builds successfully.
+
+### Docker acceptance requirements
+
+- Review the existing Dockerfiles, Compose configuration and pnpm workspace.
+- Keep the existing multi-service architecture intact unless a change is genuinely required.
+- Do not replace working configuration with newly generated boilerplate.
+- Build the Docker images after your changes.
+- Run the application and verify its health endpoints.
+- Fix any regressions caused by your changes.
+- Document any Docker configuration changes you introduce.
+
+If Docker cannot be run in the available development environment, explicitly state that the Docker build has not been verified. Do not claim it passed.
+
+## 2. Inspect the existing implementation first
+
+Before writing code:
+
+1. Inspect the repository structure and identify the frontend, backend, API routes, cryptographic libraries and existing certificate utilities.
+2. Review the existing certificate inspection and key-matching implementations.
+3. Identify how the frontend communicates with the API.
+4. Review existing error handling, file upload patterns, temporary-file handling and tests.
+5. Check the actual versions of OpenSSL and the Python cryptography library.
+6. Identify existing reusable components, API models and validation utilities.
+7. Review the latest Git changes to understand the existing Docker fixes.
+
+Produce a concise implementation plan and then proceed with implementation. Do not stop after producing the plan.
+
+Avoid duplicating existing functionality. Extend the current architecture and reuse existing components wherever practical.
+
+## 3. New feature: Certificate creation
+
+Add a new navigation item called **Create Certificate** or **Certificate Builder**, consistent with the existing sidebar.
+
+The new page must use the existing design system.
+
+Implement a guided certificate creation wizard.
+
+### Step 1: Select certificate type
+
+Provide these options:
+
+- Self-signed certificate.
+- Certificate Signing Request (CSR).
+
+Keep the two workflows clearly distinguished.
+
+For the initial implementation, do not pretend that a CSR is a signed certificate. A CSR contains a subject and public key and requests certificate issuance; it does not itself establish trust.
+
+### Step 2: Certificate subject
+
+Provide fields for:
+
+- Common Name (CN).
+- Organisation (O).
+- Organisational Unit (OU).
+- Country (C).
+- State or Province (ST).
+- Locality (L).
+- Email address, where applicable.
+
+Allow optional fields to be omitted.
+
+Validate country codes, field lengths and invalid characters. Escape or encode values appropriately when constructing certificate subjects.
+
+Display a subject preview before generation.
+
+### Step 3: Subject Alternative Names
+
+Provide an interface for adding and removing multiple SAN entries.
+
+Support:
+- DNS names.
+- IPv4 addresses.
+- IPv6 addresses.
+- Email addresses.
+- URI SANs.
+
+Allow a DNS name or IP address to be entered as the primary identity without relying on Common Name alone.
+
+Validate each SAN according to its type.
+
+For TLS certificates, ensure identity verification uses the SAN extension. Do not rely solely on the Common Name.
+
+Do not silently convert invalid DNS names, IP addresses or email addresses into different values.
+
+### Step 4: Key generation
+
+Allow users to generate a new private key or, where supported by the existing implementation, use an imported private key.
+
+Initially support:
+- RSA 2048.
+- RSA 3072, selected by default.
+- RSA 4096.
+- ECDSA P-256.
+- ECDSA P-384.
+- Ed25519 only where the chosen certificate operation and installed cryptographic libraries support it.
+
+Use secure random-number generation from the cryptographic libraries.
+
+Clearly explain algorithm compatibility limitations.
+
+Do not allow an incompatible key algorithm to reach a certificate-signing operation and then report a misleading success.
+
+### Step 5: Certificate properties
+
+For self-signed certificates, provide:
+
+- Validity period.
+- Start time and expiry time.
+- Signature algorithm, where applicable.
+- Certificate purpose.
+- Key Usage.
+- Extended Key Usage.
+- Basic Constraints.
+
+Provide sensible defaults.
+
+For a general-purpose self-signed end-entity certificate, default to `CA:FALSE`.
+
+Offer purpose presets for:
+- TLS server.
+- TLS client.
+- Email/S/MIME.
+- General-purpose testing.
+
+Use suitable Key Usage and Extended Key Usage extensions for each preset.
+
+Do not mark an end-entity certificate as a CA unless the user explicitly selects a CA workflow.
+
+If the user chooses a CA certificate, clearly explain that this is a separate workflow with additional constraints. Do not accidentally create a CA certificate using the ordinary end-entity preset.
+
+Include Subject Key Identifier and appropriate Authority Key Identifier handling where applicable.
+
+Ensure that the selected certificate purpose produces correct extensions rather than merely changing the UI label.
+
+### Step 6: Review and generate
+
+Before generation, show a complete summary of:
+
+- Subject.
+- SANs.
+- Key algorithm and size or curve.
+- Validity period.
+- Certificate purpose.
+- Key Usage.
+- Extended Key Usage.
+- Basic Constraints.
+
+Require the user to explicitly select Generate Certificate or Generate CSR.
+
+Show progress and a clear success or failure result.
+
+On success, display:
+- Certificate subject.
+- Issuer.
+- Serial number.
+- Validity dates.
+- SHA-256 fingerprint.
+- Public-key algorithm.
+- SANs.
+- Certificate extensions.
+
+Use the existing certificate-inspection logic to present the generated certificate details where possible.
+
+## 4. Self-signed certificate generation
+
+Implement real self-signed X.509 certificate generation.
+
+Use the existing Python cryptography library or another suitable established implementation already present in the project.
+
+Requirements:
+
+- Generate a real private key.
+- Construct a valid X.509 certificate.
+- Set the subject and issuer appropriately.
+- Set a unique serial number.
+- Set the validity period.
+- Add the requested SAN entries.
+- Add appropriate Key Usage and Extended Key Usage.
+- Set Basic Constraints correctly.
+- Sign the certificate using the generated private key.
+- Verify that the resulting certificate parses correctly.
+- Confirm that its self-signature verifies.
+- Make clear that a valid self-signature does not automatically make the certificate trusted by other systems.
+
+Support downloadable certificate and private-key files.
+
+Certificate output:
+- PEM by default.
+- DER as an optional export format.
+
+Private-key output:
+- Encrypted PEM by default for downloadable private keys.
+- A strong passphrase must be entered and confirmed when an encrypted key is generated for export.
+- Use an appropriate modern password-based encryption scheme supported by the installed library.
+- Never return the passphrase from the backend.
+- Never log the passphrase or private-key material.
+
+If the existing application has a well-designed, explicitly selected unencrypted-key export workflow, it may be reused with a clear warning and explicit confirmation.
+
+Do not store generated private keys permanently unless the user explicitly requests a supported managed-storage workflow.
+
+## 5. CSR generation
+
+Implement real PKCS#10 Certificate Signing Request generation.
+
+The user must be able to create a CSR with:
+- Subject details.
+- SAN entries.
+- A newly generated private key.
+- A selected supported key algorithm.
+- Relevant requested extensions.
+
+Requirements:
+
+- Generate the private key using a supported cryptographic library.
+- Create the CSR with the requested subject and public key.
+- Include requested SANs correctly.
+- Sign the CSR using the private key.
+- Verify the CSR signature before reporting success.
+- Export the CSR as PEM, with DER as an optional output format if supported.
+- Export the corresponding private key separately.
+- Ensure the exported private key matches the public key contained in the CSR.
+
+A CSR is a request, not a certificate. Do not assign it an issuer or claim it is trusted or valid as an issued X.509 certificate.
+
+Clearly explain that a CA must review and sign the CSR before it becomes an issued certificate.
+
+### CSR downloads
+
+Provide separate download controls for:
+- CSR file.
+- Private-key file.
+
+Default to encrypted private-key export and never include the private key inside the CSR file.
+
+Display the CSR's subject, public-key algorithm, SANs, signature algorithm and fingerprint of its public key where applicable.
+
+Allow the user to copy the CSR PEM text explicitly, but do not expose the private-key PEM in the normal results view.
+
+## 6. Integration with existing tools
+
+Connect the new functionality to the existing application.
+
+Where appropriate:
+
+- Add links from the success screen to Inspect Certificate.
+- Allow the generated certificate to be passed to the existing inspection component without requiring a manual re-upload.
+- Allow a generated CSR to be passed to a future CSR-inspection workflow.
+- Reuse existing file download handling.
+- Reuse existing error and notification components.
+- Preserve existing API contracts and routes.
+- Do not break certificate inspection, key matching or format conversion.
+
+If no suitable managed-artifact mechanism exists, provide downloadable results without introducing permanent private-key storage.
+
+Do not add an artificial CA-signing button until a real CA issuance workflow exists.
+
+## 7. Backend API
+
+Follow the existing API conventions.
+
+Add appropriate endpoints for certificate and CSR creation, adapting the names to the project's existing route structure.
+
+For example:
+
+- `POST /api/certificates/self-signed`
+- `POST /api/csrs/generate`
+
+Use strongly typed request and response models.
+
+Validate all input server-side. Frontend validation is supplementary and must never be the only validation.
+
+Do not accept arbitrary OpenSSL command strings or execute user-provided shell commands.
+
+If using OpenSSL subprocesses:
+- Use argument arrays.
+- Never use `shell=True`.
+- Use strict timeouts.
+- Capture errors safely.
+- Do not expose sensitive command arguments or secret values in logs.
+- Clean up temporary files on success and failure.
+
+Prefer the existing Python cryptography implementation for operations it supports reliably.
+
+Return structured errors with actionable messages, but never expose private-key material, passphrases, stack traces or internal filesystem paths.
+
+## 8. Security and privacy
+
+The application is designed as a self-hosted, local-first cryptographic workbench.
+
+Preserve the existing security model.
+
+Requirements:
+- Private keys remain on the configured server.
+- Never send private keys or passphrases to third-party services.
+- Never persist sensitive material in browser storage.
+- Do not include private-key data in telemetry or logs.
+- Use restrictive permissions for temporary files.
+- Clean up temporary files on exceptions as well as successful operations.
+- Validate filenames and prevent path traversal.
+- Enforce upload and input size limits where applicable.
+- Avoid writing secret material to ordinary application metadata storage.
+- Keep the frontend's sensitive input state as short-lived as practical.
+- Clear passphrase fields after operations finish or fail.
+- Do not claim that data is processed only in memory if the implementation writes sensitive files to disk.
+- Ensure that the application's UI accurately describes where private keys are processed and whether temporary files are used.
+
+Do not introduce unnecessary third-party network dependencies.
+
+## 9. User interface
+
+Maintain the existing CertForge_t design.
+
+Use:
+- Deep charcoal and navy backgrounds.
+- Purple accents.
+- Rounded cards.
+- Subtle glass effects.
+- Readable typography.
+- Consistent spacing.
+- Existing icons and visual language.
+- Accessible labels and keyboard navigation.
+
+The certificate wizard should be simple and uncluttered.
+
+Use progressive disclosure for advanced certificate extensions.
+
+Add clear validation messages beside invalid fields.
+
+Ensure the interface remains usable at desktop and mobile widths.
+
+Do not redesign the dashboard unnecessarily.
+
+## 10. Automated testing
+
+Add unit, integration and UI tests using the project's existing test framework.
+
+At minimum, test the following.
+
+### Self-signed certificate tests
+- Generate an RSA 3072 certificate.
+- Generate an RSA 2048 certificate.
+- Generate an ECDSA P-256 certificate.
+- Verify the generated certificate's signature.
+- Confirm the certificate has the expected subject and issuer.
+- Confirm SANs are correct.
+- Confirm the validity period is correct.
+- Confirm Basic Constraints are correct.
+- Confirm Key Usage and Extended Key Usage are correct.
+- Confirm PEM output parses.
+- Confirm DER output parses, if supported.
+- Confirm the exported private key matches the certificate.
+- Confirm encrypted private-key exports can be opened with the correct passphrase.
+
+### CSR tests
+- Generate an RSA CSR.
+- Generate an ECDSA CSR.
+- Verify the CSR signature.
+- Confirm subject fields.
+- Confirm SAN entries.
+- Confirm the CSR public key matches the exported private key.
+- Confirm malformed input is rejected.
+- Confirm unsupported algorithms are rejected clearly.
+
+### Negative tests
+- Invalid SAN entries.
+- Invalid validity periods.
+- Unsupported algorithm selections.
+- Empty or malformed input.
+- Missing required passphrases.
+- Incorrect export passphrases.
+- Failed cryptographic operations.
+- Cleanup after failed operations.
+
+### Regression tests
+Run the existing tests for:
+- Certificate inspection.
+- Certificate/private-key matching.
+- PEM/DER conversion.
+- PKCS#12 functionality.
+- Health endpoints.
+
+Fix regressions rather than disabling or weakening existing tests.
+
+## 11. Docker and GitHub regression checks
+
+After implementing the features:
+
+1. Review the Git diff.
+2. Confirm the existing Docker fixes are still present.
+3. Run frontend and backend tests.
+4. Build the frontend.
+5. Build the Docker images.
+6. Start the application using the existing Compose configuration.
+7. Check service health.
+8. Test certificate generation through the actual frontend and API.
+9. Inspect the generated certificate using the existing inspection feature.
+10. Generate a CSR and verify its signature and SANs.
+11. Test encrypted private-key export.
+12. Confirm no secrets or private-key contents appear in logs.
+
+Do not overwrite the Docker configuration to make the build pass without understanding why the change is necessary.
+
+Do not claim successful verification for tests or builds that you did not actually run.
+
+## 12. Completion report
+
+When finished, report:
+
+- Files added.
+- Files changed.
+- API endpoints added.
+- Certificate types and algorithms supported.
+- Tests executed and their actual results.
+- Docker build status.
+- Any remaining limitations.
+- Any manual configuration required.
+
+Keep the changes focused on certificate and CSR generation. Do not begin the OpenPGP, S/MIME, full CA management or unrelated features during this phase.
+
+Implement this feature completely before moving to the next phase.

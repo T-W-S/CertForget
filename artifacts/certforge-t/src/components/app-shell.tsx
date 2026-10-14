@@ -1,11 +1,12 @@
 import { type ReactNode } from 'react';
-import { Activity, ArrowUpRight, FileKey2, Fingerprint, Gauge, KeyRound, Layers3, ShieldCheck } from 'lucide-react';
+import { Activity, ArrowUpRight, FileKey2, Fingerprint, Gauge, KeyRound, Layers3, ShieldCheck, WandSparkles } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
 const navigation = [
   { href: '/', label: 'Overview', icon: Gauge },
+  { href: '/create', label: 'Create certificate', icon: WandSparkles },
   { href: '/inspect', label: 'Inspect certificate', icon: Fingerprint },
   { href: '/match', label: 'Match key pair', icon: KeyRound },
   { href: '/convert', label: 'Format tools', icon: Layers3 },

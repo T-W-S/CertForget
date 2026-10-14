@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { AppShell } from '@/components/app-shell';
@@ -9,6 +9,7 @@ import Home from '@/pages/home';
 import InspectPage from '@/pages/inspect';
 import MatchPage from '@/pages/match';
 import ConvertPage from '@/pages/convert';
+import CreatePage from '@/pages/create';
 import {
   Route,
   Switch,
@@ -19,6 +20,9 @@ import {
 const queryClient = new QueryClient();
 
 function Router() {
+  const [generatedCertificate, setGeneratedCertificate] = useState<File | null>(null);
+  const [location, setLocation] = useLocation();
+
   return (
     // Keep a shared shell (sidebar, navbar) outside the boundary so it
     // survives a page crash.
@@ -26,7 +30,15 @@ function Router() {
       <AppShell>
         <Switch>
           <Route path="/" component={Home} />
-          <Route path="/inspect" component={InspectPage} />
+          <Route path="/create">
+            <CreatePage onInspectGeneratedCertificate={(file) => {
+              setGeneratedCertificate(file);
+              setLocation('/inspect');
+            }} />
+          </Route>
+          <Route path="/inspect">
+            <InspectPage initialCertificate={generatedCertificate} />
+          </Route>
           <Route path="/match" component={MatchPage} />
           <Route path="/convert" component={ConvertPage} />
           <Route component={NotFound} />

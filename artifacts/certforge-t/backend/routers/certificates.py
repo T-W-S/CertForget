@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import hmac
-from datetime import datetime, timezone
 from typing import Literal
 
-from cryptography import x509
-from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
-from cryptography.x509.oid import ExtensionOID
 from fastapi import APIRouter, File, Form, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from api_errors import WorkbenchError
 from crypto_operations import (
@@ -19,17 +16,23 @@ from crypto_operations import (
     confirm_openssl_key_read,
     convert_certificate_with_openssl,
     file_response,
-    format_name,
+    inspect_certificate_content,
     key_details,
     load_certificate,
     load_private_key,
     load_public_key,
-    openssl_version,
     public_key_bytes,
     read_upload,
     validated_passphrase,
 )
-from schemas import CertificateInspectionResponse, FileOutput, KeyMatchResponse
+from creation_operations import create_self_signed_certificate
+from schemas import (
+    CertificateInspectionResponse,
+    FileOutput,
+    GeneratedCertificateResponse,
+    KeyMatchResponse,
+    SelfSignedCertificateRequest,
+)
 
 router = APIRouter(prefix="/certforge-api/certificates", tags=["certificates"])
 
@@ -41,61 +44,14 @@ async def inspect_certificate(
     certificate_bytes = await read_upload(
         certificate_file, "certificate_file", CERTIFICATE_MAX_BYTES
     )
-    certificate = load_certificate(certificate_bytes)
-    confirm_openssl_certificate_read(certificate_bytes)
+    return inspect_certificate_content(certificate_bytes)
 
-    now = datetime.now(timezone.utc)
-    not_before = certificate.not_valid_before_utc
-    not_after = certificate.not_valid_after_utc
-    public_key = certificate.public_key()
-    key_type, key_size = key_details(public_key)
-    signature_algorithm = certificate.signature_algorithm_oid._name or (
-        certificate.signature_algorithm_oid.dotted_string
-    )
-    try:
-        if certificate.signature_hash_algorithm is not None:
-            signature_algorithm = (
-                f"{signature_algorithm} with "
-                f"{certificate.signature_hash_algorithm.name.upper()}"
-            )
-    except UnsupportedAlgorithm:
-        pass
 
-    sans: list[str] = []
-    try:
-        san_extension = certificate.extensions.get_extension_for_oid(
-            ExtensionOID.SUBJECT_ALTERNATIVE_NAME
-        )
-        sans = sorted(
-            set(
-                [
-                    *(f"DNS:{value}" for value in san_extension.value.get_values_for_type(x509.DNSName)),
-                    *(f"IP:{value}" for value in san_extension.value.get_values_for_type(x509.IPAddress)),
-                    *(f"EMAIL:{value}" for value in san_extension.value.get_values_for_type(x509.RFC822Name)),
-                    *(f"URI:{value}" for value in san_extension.value.get_values_for_type(x509.UniformResourceIdentifier)),
-                ]
-            )
-        )
-    except x509.ExtensionNotFound:
-        pass
-
-    return CertificateInspectionResponse(
-        subject=format_name(certificate.subject),
-        issuer=format_name(certificate.issuer),
-        serial_number=format(certificate.serial_number, "X"),
-        not_before=not_before.isoformat(),
-        not_after=not_after.isoformat(),
-        is_valid_now=not_before <= now <= not_after,
-        days_until_expiry=(not_after - now).days,
-        sans=sans,
-        signature_algorithm=signature_algorithm,
-        public_key_algorithm=key_type,
-        public_key_size=key_size,
-        sha256_fingerprint=":".join(
-            f"{byte:02X}" for byte in certificate.fingerprint(hashes.SHA256())
-        ),
-        openssl_version=openssl_version(),
-    )
+@router.post("/self-signed", response_model=GeneratedCertificateResponse)
+async def create_self_signed(
+    request: SelfSignedCertificateRequest,
+) -> GeneratedCertificateResponse:
+    return await run_in_threadpool(create_self_signed_certificate, request)
 
 
 @router.post("/match", response_model=KeyMatchResponse)

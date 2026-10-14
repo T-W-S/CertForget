@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { ChevronRight, Clipboard, Fingerprint, LockKeyhole } from 'lucide-react';
 import { Link } from 'wouter';
@@ -43,10 +43,19 @@ function CertificateResult({ result }: { result: InspectResponse }) {
   );
 }
 
-export default function InspectPage() {
+export default function InspectPage({ initialCertificate = null }: { initialCertificate?: File | null }) {
   const [certificate, setCertificate] = useState<File | null>(null);
   const [result, setResult] = useState<InspectResponse | null>(null);
   const mutation = useMutation({ mutationFn: api.inspect, onSuccess: setResult });
+  useEffect(() => {
+    if (!initialCertificate) {
+      return;
+    }
+    setCertificate(initialCertificate);
+    const body = new FormData();
+    body.append('certificate_file', initialCertificate);
+    mutation.mutate(body);
+  }, [initialCertificate]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!certificate) {

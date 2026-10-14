@@ -11,7 +11,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py api_errors.py schemas.py crypto_operations.py ./
+COPY main.py api_errors.py schemas.py crypto_operations.py creation_operations.py ./
 COPY routers ./routers
 
 RUN useradd --system --uid 10001 --create-home certforge
