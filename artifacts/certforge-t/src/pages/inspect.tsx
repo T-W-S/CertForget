@@ -43,7 +43,13 @@ function CertificateResult({ result }: { result: InspectResponse }) {
   );
 }
 
-export default function InspectPage({ initialCertificate = null }: { initialCertificate?: File | null }) {
+export default function InspectPage({
+  initialCertificate = null,
+  onInitialCertificateConsumed,
+}: {
+  initialCertificate?: File | null;
+  onInitialCertificateConsumed?: () => void;
+}) {
   const [certificate, setCertificate] = useState<File | null>(null);
   const [result, setResult] = useState<InspectResponse | null>(null);
   const mutation = useMutation({ mutationFn: api.inspect, onSuccess: setResult });
@@ -55,6 +61,7 @@ export default function InspectPage({ initialCertificate = null }: { initialCert
     const body = new FormData();
     body.append('certificate_file', initialCertificate);
     mutation.mutate(body);
+    onInitialCertificateConsumed?.();
   }, [initialCertificate]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

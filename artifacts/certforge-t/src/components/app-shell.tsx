@@ -47,8 +47,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1600px] lg:grid-cols-[232px_minmax(0,1fr)]">
-        <aside className="border-b border-white/[0.07] bg-[#151520]/55 px-4 py-3 lg:sticky lg:top-[65px] lg:h-[calc(100dvh-65px)] lg:border-b-0 lg:border-r lg:px-4 lg:py-8">
+      <div className="mx-auto grid min-w-0 max-w-[1600px] lg:grid-cols-[232px_minmax(0,1fr)]">
+        <aside className="min-w-0 border-b border-white/[0.07] bg-[#151520]/55 px-4 py-3 lg:sticky lg:top-[65px] lg:h-[calc(100dvh-65px)] lg:border-b-0 lg:border-r lg:px-4 lg:py-8">
           <div className="mb-3 hidden px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#706e80] lg:block">Workspace</div>
           <nav className="flex gap-1 overflow-x-auto lg:flex-col">
             {navigation.map((item) => {

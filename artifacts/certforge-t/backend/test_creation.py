@@ -177,6 +177,44 @@ def test_self_signed_certificate_supports_pem_and_der(
 
 
 @pytest.mark.parametrize(
+    ("purpose", "expected_eku", "rsa_key_encipherment"),
+    [
+        ("tls-client", ExtendedKeyUsageOID.CLIENT_AUTH, False),
+        ("smime", ExtendedKeyUsageOID.EMAIL_PROTECTION, True),
+        ("general", None, False),
+    ],
+)
+def test_certificate_purpose_profiles_set_usage_and_eku(
+    purpose: str,
+    expected_eku: x509.ObjectIdentifier | None,
+    rsa_key_encipherment: bool,
+) -> None:
+    response = client.post(
+        "/certforge-api/certificates/self-signed",
+        json=_self_signed_request(algorithm="RSA-2048", purpose=purpose),
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    certificate = _load_certificate(result["certificate"])
+    usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert usage.digital_signature is True
+    assert usage.key_encipherment is rsa_key_encipherment
+    assert certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
+    try:
+        extended_key_usage = certificate.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+    except x509.ExtensionNotFound:
+        extended_key_usage = None
+    if expected_eku is None:
+        assert extended_key_usage is None
+    else:
+        assert extended_key_usage is not None
+        assert expected_eku in extended_key_usage
+    assert result["self_signature_verified"] is True
+
+
+@pytest.mark.parametrize(
     "algorithm",
     ["RSA-3072", "ECDSA-P256", "Ed25519"],
 )

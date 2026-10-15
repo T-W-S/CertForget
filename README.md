@@ -30,6 +30,14 @@ generated results.
 - Compare certificate and private-key public keys. Encrypted private-key
   uploads can be unlocked with a passphrase.
 - Convert PEM certificates to DER and DER certificates to PEM.
+- Create real self-signed X.509 certificates and PKCS#10 CSRs. Generate RSA
+  2048/3072/4096, ECDSA P-256/P-384, or Ed25519 keys, or import a supported
+  private key. Add DNS, IP, email, and URI SANs; choose TLS server/client,
+  S/MIME, or general-purpose extensions; and choose PEM or DER output.
+- Exported private keys are PKCS#8 PEM encrypted with the user-selected
+  passphrase. The app does not display or retain private-key contents. A
+  self-signature does not make a certificate trusted, and a CSR is not an
+  issued certificate.
 - Export matching certificate/key pairs to PKCS#12/PFX, or import PFX files
   and download the contained certificate, chain certificates, and private key.
 - See the fixed OpenSSL command templates used for supported actions. The
@@ -67,6 +75,8 @@ The FastAPI schema and interactive docs are available at
 - `POST /certforge-api/certificates/inspect`
 - `POST /certforge-api/certificates/match`
 - `POST /certforge-api/certificates/convert`
+- `POST /certforge-api/certificates/self-signed`
+- `POST /certforge-api/csrs/generate`
 - `POST /certforge-api/pkcs12/export`
 - `POST /certforge-api/pkcs12/import`
 
@@ -85,21 +95,37 @@ python -m pytest
 ```
 
 The tests generate throwaway certificates and keys locally, then exercise the
-actual endpoints and OpenSSL conversion/export/import commands. They do not
-require sample certificates or real keys.
+actual endpoints, key generation/import, signature verification, certificate
+profiles, PEM/DER output, encrypted-key export, and OpenSSL
+conversion/export/import commands. React wizard tests cover validation,
+downloads, CSR copying, certificate-inspector handoff, and clearing key
+material after errors. They do not require sample certificates or real keys.
+
+Run the frontend tests and checks from the workspace root:
+
+```sh
+pnpm --filter @workspace/certforge-t test
+pnpm --filter @workspace/certforge-t run typecheck
+pnpm --filter @workspace/certforge-t run build
+```
 
 ## Project layout
 
 - `artifacts/certforge-t/src/` — responsive React/TypeScript app.
 - `artifacts/certforge-t/backend/main.py` — FastAPI app assembly and structured
   error handlers.
-- `artifacts/certforge-t/backend/routers/` — separate certificate and PKCS#12
-  API routes.
+- `artifacts/certforge-t/backend/routers/` — separate certificate, CSR, and
+  PKCS#12 API routes.
 - `artifacts/certforge-t/backend/crypto_operations.py` — reusable certificate,
   key, OpenSSL, and secure temporary-file operations.
+- `artifacts/certforge-t/backend/creation_operations.py` — in-memory key,
+  self-signed certificate, and CSR generation.
 - `artifacts/certforge-t/backend/schemas.py` and `api_errors.py` — named
   response models and structured operation errors.
-- `artifacts/certforge-t/backend/test_main.py` — automated API tests.
+- `artifacts/certforge-t/backend/test_main.py` and `test_creation.py` —
+  automated API and cryptographic tests.
+- `artifacts/certforge-t/test/create-page.test.tsx` — automated React wizard
+  tests.
 - `artifacts/certforge-t/Dockerfile.web` — frontend build and unprivileged
   Nginx image.
 - `artifacts/certforge-t/backend/Dockerfile` — FastAPI and OpenSSL image.

@@ -36,6 +36,15 @@ import {
 
 type BuildMode = 'certificate' | 'csr';
 type WizardStep = 0 | 1 | 2;
+type ValidationTarget =
+  | 'identity'
+  | `subject.${keyof CertificateSubjectRequest}`
+  | 'sans'
+  | 'key'
+  | 'export_passphrase'
+  | 'confirm_passphrase'
+  | 'not_before'
+  | 'not_after';
 type SubjectForm = { [Key in keyof CertificateSubjectRequest]: string };
 type SafeResult =
   | { kind: 'certificate'; inspection: GeneratedCertificateResponse['inspection']; verified: boolean }
@@ -101,6 +110,7 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
   const [exportPassphrase, setExportPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [fieldError, setFieldError] = useState('');
+  const [validationTarget, setValidationTarget] = useState<ValidationTarget | null>(null);
   const [serverError, setServerError] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SafeResult | null>(null);
@@ -109,6 +119,7 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
 
   const clearFeedback = () => {
     setFieldError('');
+    setValidationTarget(null);
     setServerError('');
     setResult(null);
     publicCertificateRef.current = null;
@@ -120,82 +131,81 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
     setMode(nextMode);
     setStep(0);
     clearFeedback();
+    setImportedKey(null);
+    setImportPassphrase('');
+    setExportPassphrase('');
+    setConfirmPassphrase('');
+  };
+
+  const invalid = (target: ValidationTarget, message: string) => {
+    setValidationTarget(target);
+    setFieldError(message);
+    return false;
   };
 
   const validateStep = (target: WizardStep) => {
     if (target === 0) {
       if (!subject.common_name.trim() && !sans.some((san) => san.value.length > 0)) {
-        setFieldError('Enter a Common Name or at least one SAN. A DNS or IP SAN can be the primary identity without a Common Name.');
-        return false;
+        return invalid('identity', 'Enter a Common Name or at least one SAN. A DNS or IP SAN can be the primary identity without a Common Name.');
       }
-      if (Object.values(subject).some((value) => value !== value.trim())) {
-        setFieldError('Remove leading or trailing spaces from subject fields.');
-        return false;
+      const whitespaceField = Object.entries(subject).find(([, value]) => value !== value.trim())?.[0] as keyof CertificateSubjectRequest | undefined;
+      if (whitespaceField) {
+        return invalid(`subject.${whitespaceField}`, 'Remove leading or trailing spaces from this subject field.');
       }
       if (subject.email_address && !isValidEmail(subject.email_address)) {
-        setFieldError('Enter a valid email address or leave the field empty.');
-        return false;
+        return invalid('subject.email_address', 'Enter a valid email address or leave the field empty.');
       }
       if (subject.country && !/^[A-Z]{2}$/.test(subject.country)) {
-        setFieldError('Country must be a two-letter ISO 3166-1 code, such as GB or US.');
-        return false;
+        return invalid('subject.country', 'Country must be a two-letter uppercase ISO 3166-1 code, such as GB or US.');
       }
       const invalidSan = sans.find((san) => !san.value.trim() || !isValidSan(san));
       if (invalidSan) {
-        setFieldError(`${invalidSan.type} subject alternative name needs a valid, non-empty value.`);
-        return false;
+        return invalid('sans', `${invalidSan.type} subject alternative name needs a valid, non-empty value.`);
       }
       const sanKeys = sans.map((san) => `${san.type}:${san.value}`);
       if (new Set(sanKeys).size !== sanKeys.length) {
-        setFieldError('Remove duplicate subject alternative names.');
-        return false;
+        return invalid('sans', 'Remove duplicate subject alternative names.');
       }
       if (purpose === 'tls-server' && !sans.some((san) => ['DNS', 'IP'].includes(san.type) && isValidSan(san))) {
-        setFieldError('TLS server identity must include at least one valid DNS or IP SAN.');
-        return false;
+        return invalid('sans', 'TLS server identity must include at least one valid DNS or IP SAN.');
       }
       if (purpose === 'tls-client' && sans.length === 0) {
-        setFieldError('TLS certificates need a SAN; a Common Name alone is not used for identity.');
-        return false;
+        return invalid('sans', 'TLS certificates need a SAN; a Common Name alone is not used for identity.');
       }
       if (purpose === 'smime' && !subject.email_address && !sans.some((san) => san.type === 'EMAIL' && isValidSan(san))) {
-        setFieldError('S/MIME certificates need an email address in the subject or SANs.');
-        return false;
+        return invalid('sans', 'S/MIME certificates need an email address in the subject or SANs.');
       }
     }
     if (target === 1) {
       if (keySource === 'import' && !importedKey) {
-        setFieldError('Choose a private key file to continue.');
-        return false;
+        return invalid('key', 'Choose a private key file to continue.');
       }
       if (!exportPassphrase) {
-        setFieldError('Set an export passphrase to encrypt the downloaded private key.');
-        return false;
+        return invalid('export_passphrase', 'Set an export passphrase to encrypt the downloaded private key.');
       }
       if (!isStrongExportPassphrase(exportPassphrase)) {
-        setFieldError('Use a passphrase of at least 16 characters, or at least 12 characters with three character types.');
-        return false;
+        return invalid('export_passphrase', 'Use a passphrase of at least 16 characters, or at least 12 characters with three character types.');
       }
       if (exportPassphrase !== confirmPassphrase) {
-        setFieldError('The export passphrase and confirmation do not match.');
-        return false;
+        return invalid('confirm_passphrase', 'The export passphrase and confirmation do not match.');
       }
       if (mode === 'certificate') {
-        if (!notBefore || !notAfter || Number.isNaN(new Date(notBefore).getTime()) || Number.isNaN(new Date(notAfter).getTime())) {
-          setFieldError('Enter valid start and end dates for the certificate.');
-          return false;
+        if (!notBefore || Number.isNaN(new Date(notBefore).getTime())) {
+          return invalid('not_before', 'Enter a valid start date for the certificate.');
+        }
+        if (!notAfter || Number.isNaN(new Date(notAfter).getTime())) {
+          return invalid('not_after', 'Enter a valid expiry date for the certificate.');
         }
         if (new Date(notAfter) <= new Date(notBefore)) {
-          setFieldError('The expiry date must be later than the start date.');
-          return false;
+          return invalid('not_after', 'The expiry date must be later than the start date.');
         }
         if (new Date(notAfter).getTime() - new Date(notBefore).getTime() > 3650 * 86400000) {
-          setFieldError('Certificate validity cannot exceed 10 years.');
-          return false;
+          return invalid('not_after', 'Certificate validity cannot exceed 10 years.');
         }
       }
     }
     setFieldError('');
+    setValidationTarget(null);
     return true;
   };
 
@@ -360,7 +370,14 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
           {step < 2 ? (
             <form className="mt-6 space-y-5" onSubmit={(event) => { event.preventDefault(); continueStep(); }}>
               {step === 0 ? (
-                <IdentityStep subject={subject} setSubject={setSubject} sans={sans} setSans={setSans} />
+                <IdentityStep
+                  subject={subject}
+                  setSubject={setSubject}
+                  sans={sans}
+                  setSans={setSans}
+                  validationTarget={validationTarget}
+                  fieldError={fieldError}
+                />
               ) : (
                 <KeyValidityStep
                   mode={mode}
@@ -384,6 +401,8 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
                   setExportPassphrase={setExportPassphrase}
                   confirmPassphrase={confirmPassphrase}
                   setConfirmPassphrase={setConfirmPassphrase}
+                  validationTarget={validationTarget}
+                  fieldError={fieldError}
                 />
               )}
               {fieldError && <FieldError>{fieldError}</FieldError>}
@@ -391,7 +410,7 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
                 <span className="flex items-center gap-1.5 text-[10px] text-[#817e91]"><LockKeyhole size={12} className="text-emerald-300" />Request-scoped sensitive inputs</span>
                 {step > 0 ? (
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => { setFieldError(''); setStep(0); }} className="secondary-button min-h-10 px-3 text-[11px]" data-testid="button-back"><ArrowLeft size={14} />Back</button>
+                    <button type="button" onClick={() => { setFieldError(''); setValidationTarget(null); setStep(0); }} className="secondary-button min-h-10 px-3 text-[11px]" data-testid="button-back"><ArrowLeft size={14} />Back</button>
                     <button type="submit" className="primary-button min-h-10 px-4 text-[12px]" data-testid="button-continue">Review request<ArrowRight size={15} /></button>
                   </div>
                 ) : (
@@ -418,7 +437,7 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
               {loading && <div className="rounded-xl border border-violet-300/15 bg-violet-300/[0.045] p-3 text-[11px] text-violet-100/80" role="status" data-testid="status-progress">Generating on your certificate service. Files will download when the operation completes.</div>}
               {result && <ResultPanel result={result} onInspect={inspectGenerated} onCopyCsr={copyCsr} />}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
-                <button type="button" onClick={() => { setFieldError(''); setServerError(''); setResult(null); setStep(1); }} className="secondary-button min-h-10 px-3 text-[11px]" disabled={loading} data-testid="button-edit-request"><ArrowLeft size={14} />Edit request</button>
+                <button type="button" onClick={() => { setFieldError(''); setValidationTarget(null); setServerError(''); setResult(null); setStep(1); }} className="secondary-button min-h-10 px-3 text-[11px]" disabled={loading} data-testid="button-edit-request"><ArrowLeft size={14} />Edit request</button>
                 <button type="submit" disabled={loading} className="primary-button min-h-10 px-4 text-[12px]" data-testid="button-generate">
                   {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <WandSparkles size={15} />}
                   {loading ? 'Generating securely…' : mode === 'certificate' ? 'Generate certificate' : 'Generate CSR'}
@@ -448,14 +467,41 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
   );
 }
 
-function IdentityStep({ subject, setSubject, sans, setSans }: { subject: SubjectForm; setSubject: (subject: SubjectForm) => void; sans: SubjectAltNameRequest[]; setSans: (sans: SubjectAltNameRequest[]) => void }) {
-  const field = (key: keyof CertificateSubjectRequest, label: string, hint: string, required = false) => (
-    <label key={key} className="block text-[12px] font-medium text-[#d7d4e1]">
-      {label}{required && <span className="ml-1 text-violet-200">*</span>}
-      <input value={subject[key] ?? ''} onChange={(event) => setSubject({ ...subject, [key]: event.target.value })} className="field-input mt-2 text-[12px]" placeholder={hint} required={required} autoComplete="off" data-testid={`input-subject-${key}`} />
-      {required && <span className="mt-1 block text-[10px] font-normal text-[#777486]">Required. This is the primary identity in the distinguished name.</span>}
-    </label>
-  );
+function IdentityStep({
+  subject,
+  setSubject,
+  sans,
+  setSans,
+  validationTarget,
+  fieldError,
+}: {
+  subject: SubjectForm;
+  setSubject: (subject: SubjectForm) => void;
+  sans: SubjectAltNameRequest[];
+  setSans: (sans: SubjectAltNameRequest[]) => void;
+  validationTarget: ValidationTarget | null;
+  fieldError: string;
+}) {
+  const field = (key: keyof CertificateSubjectRequest, label: string, hint: string) => {
+    const target = `subject.${key}` as ValidationTarget;
+    const hasError = validationTarget === target
+      || (validationTarget === 'identity' && key === 'common_name');
+    return (
+      <label key={key} className="block text-[12px] font-medium text-[#d7d4e1]">
+        {label}
+        <input
+          value={subject[key] ?? ''}
+          onChange={(event) => setSubject({ ...subject, [key]: event.target.value })}
+          className={`field-input mt-2 text-[12px] ${hasError ? 'border-rose-300/45' : ''}`}
+          placeholder={hint}
+          aria-invalid={hasError}
+          autoComplete="off"
+          data-testid={`input-subject-${key}`}
+        />
+        {hasError && <InlineValidation message={fieldError} />}
+      </label>
+    );
+  };
   return (
     <>
       <div>
@@ -489,6 +535,7 @@ function IdentityStep({ subject, setSubject, sans, setSans }: { subject: Subject
             ))}
           </div>
         )}
+        {validationTarget === 'sans' && <InlineValidation message={fieldError} />}
         <p className="mt-2 text-[10px] text-[#777486]">Values are sent exactly as entered. Wildcards are supported only where the target usage permits them.</p>
       </div>
     </>
@@ -517,6 +564,8 @@ function KeyValidityStep(props: {
   setExportPassphrase: (value: string) => void;
   confirmPassphrase: string;
   setConfirmPassphrase: (value: string) => void;
+  validationTarget: ValidationTarget | null;
+  fieldError: string;
 }) {
   return (
     <>
@@ -538,6 +587,7 @@ function KeyValidityStep(props: {
       ) : (
         <div className="space-y-4">
           <FileField label="Imported private key" accept=".pem,.key,.pk8,.der" helper="PEM or DER private key" file={props.importedKey} onChange={props.setImportedKey} testId="create-imported-key" />
+          {props.validationTarget === 'key' && <InlineValidation message={props.fieldError} />}
           <SecretInput label="Existing key passphrase" value={props.importPassphrase} onChange={props.setImportPassphrase} placeholder="Only if the imported key is encrypted" testId="input-import-key-passphrase" />
           <p className="text-[10px] text-[#777486]">The key type is detected from the imported file; the algorithm field is sent as null.</p>
         </div>
@@ -551,8 +601,8 @@ function KeyValidityStep(props: {
         <div className="space-y-3 rounded-xl border border-white/[0.055] bg-white/[0.015] p-3.5">
           <div><h3 className="text-[12px] font-semibold text-[#dedbe8]">Certificate validity</h3><p className="mt-1 text-[10px] leading-4 text-[#817e91]">Dates are submitted as timezone-qualified UTC timestamps.</p></div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-[11px] font-medium text-[#c9c6d4]">Valid from<input type="datetime-local" value={props.notBefore} onChange={(event) => props.setNotBefore(event.target.value)} className="field-input mt-2 text-[11px]" data-testid="input-not-before" /></label>
-            <label className="block text-[11px] font-medium text-[#c9c6d4]">Expires<input type="datetime-local" value={props.notAfter} onChange={(event) => props.setNotAfter(event.target.value)} className="field-input mt-2 text-[11px]" data-testid="input-not-after" /></label>
+            <label className="block text-[11px] font-medium text-[#c9c6d4]">Valid from<input type="datetime-local" value={props.notBefore} onChange={(event) => props.setNotBefore(event.target.value)} className="field-input mt-2 text-[11px]" aria-invalid={props.validationTarget === 'not_before'} data-testid="input-not-before" />{props.validationTarget === 'not_before' && <InlineValidation message={props.fieldError} />}</label>
+            <label className="block text-[11px] font-medium text-[#c9c6d4]">Expires<input type="datetime-local" value={props.notAfter} onChange={(event) => props.setNotAfter(event.target.value)} className="field-input mt-2 text-[11px]" aria-invalid={props.validationTarget === 'not_after'} data-testid="input-not-after" />{props.validationTarget === 'not_after' && <InlineValidation message={props.fieldError} />}</label>
           </div>
         </div>
       )}
@@ -561,8 +611,8 @@ function KeyValidityStep(props: {
           <select value={props.format} onChange={(event) => props.setFormat(event.target.value as 'PEM' | 'DER')} className="field-select mt-2 text-[12px]" data-testid="select-output-format"><option value="PEM">PEM</option><option value="DER">DER</option></select>
         </label>
         <div className="hidden sm:block" />
-        <SecretInput label="Private-key export passphrase" value={props.exportPassphrase} onChange={props.setExportPassphrase} placeholder="Required to encrypt downloaded key" testId="input-export-passphrase" />
-        <SecretInput label="Confirm export passphrase" value={props.confirmPassphrase} onChange={props.setConfirmPassphrase} placeholder="Enter the same passphrase again" testId="input-confirm-export-passphrase" />
+        <SecretInput label="Private-key export passphrase" value={props.exportPassphrase} onChange={props.setExportPassphrase} placeholder="Required to encrypt downloaded key" testId="input-export-passphrase" error={props.validationTarget === 'export_passphrase' ? props.fieldError : undefined} />
+        <SecretInput label="Confirm export passphrase" value={props.confirmPassphrase} onChange={props.setConfirmPassphrase} placeholder="Enter the same passphrase again" testId="input-confirm-export-passphrase" error={props.validationTarget === 'confirm_passphrase' ? props.fieldError : undefined} />
       </div>
       <p className="rounded-xl border border-emerald-300/[0.1] bg-emerald-300/[0.025] px-3 py-2.5 text-[10px] leading-5 text-emerald-100/65">The confirmation stays in this form only; only the export passphrase is sent. Both passphrase fields and any imported key are cleared when generation ends.</p>
     </>
@@ -655,8 +705,38 @@ function ChoiceCard({ selected, onClick, title, copy, testId }: { selected: bool
   return <button type="button" onClick={onClick} className={`rounded-xl border p-3 text-left transition ${selected ? 'border-violet-300/25 bg-violet-300/[0.07]' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]'}`} aria-pressed={selected} data-testid={testId}><span className="block text-[11px] font-semibold text-[#dedbe8]">{title}</span><span className="mt-1 block text-[10px] text-[#858294]">{copy}</span></button>;
 }
 
-function SecretInput({ label, value, onChange, placeholder, testId }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; testId: string }) {
-  return <label className="block text-[12px] font-medium text-[#d7d4e1]">{label}<input type="password" autoComplete="new-password" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="field-input mt-2 text-[12px]" data-testid={testId} /><span className="mt-1 block text-[10px] font-normal text-[#777486]">Never saved in browser storage or included in a URL.</span></label>;
+function SecretInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  testId,
+  error,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  testId: string;
+  error?: string;
+}) {
+  return (
+    <label className="block text-[12px] font-medium text-[#d7d4e1]">
+      {label}
+      <input
+        type="password"
+        autoComplete="new-password"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className={`field-input mt-2 text-[12px] ${error ? 'border-rose-300/45' : ''}`}
+        aria-invalid={Boolean(error)}
+        data-testid={testId}
+      />
+      {error && <InlineValidation message={error} />}
+      <span className="mt-1 block text-[10px] font-normal text-[#777486]">Never saved in browser storage or included in a URL.</span>
+    </label>
+  );
 }
 
 function ReviewBlock({ title, value }: { title: string; value: string }) {
@@ -671,7 +751,11 @@ function FieldError({ children }: { children: ReactNode }) {
   return <p className="rounded-lg border border-rose-300/15 bg-rose-300/[0.045] px-3 py-2.5 text-[11px] leading-5 text-rose-100/85" role="alert" data-testid="text-field-error">{children}</p>;
 }
 
-function isValidSan(san: SubjectAltNameRequest) {
+function InlineValidation({ message }: { message: string }) {
+  return <span className="mt-1 block text-[10px] font-normal leading-4 text-rose-200" role="alert">{message}</span>;
+}
+
+function isValidSan(san: SubjectAltNameRequest): boolean {
   const value = san.value;
   if (!value || value !== value.trim() || !/^[\x21-\x7E]+$/.test(value)) {
     return false;
@@ -704,7 +788,7 @@ function isValidSan(san: SubjectAltNameRequest) {
   return /^[A-Za-z][A-Za-z0-9+.-]*:[^\s]*$/.test(value);
 }
 
-function isValidEmail(value: string) {
+function isValidEmail(value: string): boolean {
   if (!/^[\x21-\x7E]+$/.test(value) || value.length > 254 || value.split('@').length !== 2) {
     return false;
   }

@@ -194,6 +194,18 @@ class CertificateCreationRequest(BaseModel):
             or not raw.strip()
         ):
             raise ValueError("Use a valid passphrase of at least 12 characters.")
+        character_classes = (
+            any(character.islower() for character in raw),
+            any(character.isupper() for character in raw),
+            any(character.isdigit() for character in raw),
+            any(not character.isalnum() for character in raw),
+        )
+        if len(raw) < 12 or (
+            len(raw) < 16 and sum(character_classes) < 3
+        ):
+            raise ValueError(
+                "Use at least 16 characters, or at least 12 with three character types."
+            )
         return value
 
     @model_validator(mode="after")

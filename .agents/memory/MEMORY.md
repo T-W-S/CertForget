@@ -1,0 +1,1 @@
+- [CertForge_t future scope](certforge-scope.md) — Keep CA, S/MIME, OpenPGP, revocation, and expiry-monitoring modules as separate later additions.

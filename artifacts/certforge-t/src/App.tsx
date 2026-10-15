@@ -21,7 +21,7 @@ const queryClient = new QueryClient();
 
 function Router() {
   const [generatedCertificate, setGeneratedCertificate] = useState<File | null>(null);
-  const [location, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
 
   return (
     // Keep a shared shell (sidebar, navbar) outside the boundary so it
@@ -37,7 +37,10 @@ function Router() {
             }} />
           </Route>
           <Route path="/inspect">
-            <InspectPage initialCertificate={generatedCertificate} />
+            <InspectPage
+              initialCertificate={generatedCertificate}
+              onInitialCertificateConsumed={() => setGeneratedCertificate(null)}
+            />
           </Route>
           <Route path="/match" component={MatchPage} />
           <Route path="/convert" component={ConvertPage} />

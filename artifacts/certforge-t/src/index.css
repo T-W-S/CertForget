@@ -140,6 +140,7 @@ select {
 
 .app-main {
   max-width: 1440px;
+  min-width: 0;
   margin: 0 auto;
   padding: 48px clamp(20px, 4vw, 58px) 72px;
 }
