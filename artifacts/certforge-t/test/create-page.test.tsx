@@ -16,10 +16,11 @@ vi.mock('@/lib/api', () => ({
   },
   downloadBase64: vi.fn(),
   encodeFileBase64: vi.fn(async () => 'AAECAw=='),
-  fileFromBase64: vi.fn(() => {
-    const output = new File(['-----BEGIN CERTIFICATE REQUEST-----\nrequest\n'], 'output.pem');
+  fileFromBase64: vi.fn((file: { content_base64: string; filename: string; media_type: string }) => {
+    const contents = atob(file.content_base64);
+    const output = new File([contents], file.filename, { type: file.media_type });
     Object.defineProperty(output, 'text', {
-      value: async () => '-----BEGIN CERTIFICATE REQUEST-----\nrequest\n',
+      value: async () => contents,
     });
     return output;
   }),
@@ -34,8 +35,13 @@ const binaryFile = (filename: string, contents: string): BinaryResponse => ({
 });
 
 const certificateResponse: GeneratedCertificateResponse = {
-  certificate: binaryFile('certificate.pem', 'PUBLIC CERTIFICATE'),
+  certificate: binaryFile(
+    'certificate.pem',
+    '-----BEGIN CERTIFICATE-----\ncertificate bytes\n-----END CERTIFICATE-----\n',
+  ),
+  certificate_pem: null,
   private_key: binaryFile('private-key.encrypted.pem', 'ENCRYPTED PRIVATE KEY'),
+  archive: binaryFile('certificate-and-private-key.zip', 'ZIP bytes'),
   inspection: {
     subject: 'commonName=service.example.test',
     issuer: 'commonName=service.example.test',
@@ -62,7 +68,10 @@ const certificateResponse: GeneratedCertificateResponse = {
 };
 
 const csrResponse: GeneratedCsrResponse = {
-  csr: binaryFile('certificate-request.pem', '-----BEGIN CERTIFICATE REQUEST-----'),
+  csr: binaryFile(
+    'certificate-request.pem',
+    '-----BEGIN CERTIFICATE REQUEST-----\nrequest\n-----END CERTIFICATE REQUEST-----\n',
+  ),
   private_key: binaryFile('private-key.encrypted.pem', 'ENCRYPTED PRIVATE KEY'),
   subject: 'commonName=service.example.test',
   public_key_algorithm: 'RSA-3072',
@@ -130,7 +139,7 @@ describe('Create certificate wizard', () => {
     expect(api.createSelfSigned).not.toHaveBeenCalled();
   });
 
-  it('sends a real self-signed request, downloads both outputs, and hands off only the certificate', async () => {
+  it('generates a self-signed certificate and separately downloads each output', async () => {
     vi.mocked(api.createSelfSigned).mockResolvedValue(certificateResponse);
     const { onInspectGeneratedCertificate } = mountCreatePage();
 
@@ -147,13 +156,37 @@ describe('Create certificate wizard', () => {
     expect(request.sans).toEqual([{ type: 'DNS', value: 'service.example.test' }]);
     expect(request.private_key_export_passphrase).toBe(outputPassphrase);
     expect(request).not.toHaveProperty('confirm_passphrase');
-    expect(downloadBase64).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText(/PRIVATE KEY/)).toBeNull();
+    expect(downloadBase64).not.toHaveBeenCalled();
+    expect(screen.getByText('Generated files')).toBeTruthy();
+    expect(screen.queryByText(/ENCRYPTED PRIVATE KEY/)).toBeNull();
     expect(screen.getByText('CA:FALSE')).toBeTruthy();
+
+    vi.mocked(downloadBase64).mockImplementationOnce(() => {
+      expect(screen.getByTestId('download-status').textContent).toContain(
+        'Preparing certificate.pem',
+      );
+    });
+    fireEvent.click(screen.getByTestId('button-download-certificate'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(certificateResponse.certificate);
+    fireEvent.click(screen.getByTestId('button-download-certificate'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(certificateResponse.certificate);
+    fireEvent.click(screen.getByTestId('button-download-private-key'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(certificateResponse.private_key);
+    fireEvent.click(screen.getByTestId('button-download-bundle'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(certificateResponse.archive);
+    expect(downloadBase64).toHaveBeenCalledTimes(4);
+    expect(screen.getByTestId('download-status').textContent).toContain(
+      'certificate-and-private-key.zip download started',
+    );
 
     fireEvent.click(screen.getByTestId('button-inspect-generated'));
     expect(onInspectGeneratedCertificate).toHaveBeenCalledTimes(1);
-    expect(onInspectGeneratedCertificate).toHaveBeenCalledWith(expect.any(File));
+    const inspectedCertificate = vi.mocked(onInspectGeneratedCertificate).mock.calls[0][0];
+    expect(inspectedCertificate).toBeInstanceOf(File);
+    expect(inspectedCertificate.name).toBe('certificate.pem');
+    expect(await inspectedCertificate.text()).toBe(
+      '-----BEGIN CERTIFICATE-----\ncertificate bytes\n-----END CERTIFICATE-----\n',
+    );
 
     fireEvent.click(screen.getByTestId('button-edit-request'));
     expect((screen.getByTestId('input-export-passphrase') as HTMLInputElement).value).toBe('');
@@ -178,12 +211,68 @@ describe('Create certificate wizard', () => {
     await waitFor(() => expect(screen.getByTestId('panel-generated-result')).toBeTruthy());
     expect(api.generateCsr).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/This CSR is a request, not a certificate/)).toBeTruthy();
+    expect(downloadBase64).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('button-download-csr'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(csrResponse.csr);
+    fireEvent.click(screen.getByTestId('button-download-private-key'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(csrResponse.private_key);
     expect(downloadBase64).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByTestId('button-copy-csr'));
     await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
     expect(clipboardWrite).toHaveBeenCalledWith(
-      '-----BEGIN CERTIFICATE REQUEST-----\nrequest\n',
+      '-----BEGIN CERTIFICATE REQUEST-----\nrequest\n-----END CERTIFICATE REQUEST-----\n',
     );
+  });
+
+  it('offers PEM and DER separately while the inspector always receives PEM', async () => {
+    const derCertificateResponse: GeneratedCertificateResponse = {
+      ...certificateResponse,
+      certificate: binaryFile('certificate.der', 'DER certificate bytes'),
+      certificate_pem: binaryFile(
+        'certificate.pem',
+        '-----BEGIN CERTIFICATE-----\ncertificate bytes\n-----END CERTIFICATE-----\n',
+      ),
+    };
+    vi.mocked(api.createSelfSigned).mockResolvedValue(derCertificateResponse);
+    const { onInspectGeneratedCertificate } = mountCreatePage();
+
+    addIdentity();
+    fireEvent.change(screen.getByTestId('select-output-format'), {
+      target: { value: 'DER' },
+    });
+    enterExportPassphrase();
+    fireEvent.click(screen.getByTestId('button-continue'));
+    fireEvent.click(screen.getByTestId('button-generate'));
+    await waitFor(() => expect(screen.getByTestId('panel-generated-result')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('button-download-certificate'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(derCertificateResponse.certificate_pem);
+    fireEvent.click(screen.getByTestId('button-download-der'));
+    expect(downloadBase64).toHaveBeenLastCalledWith(derCertificateResponse.certificate);
+    fireEvent.click(screen.getByTestId('button-inspect-generated'));
+    const inspectedCertificate = vi.mocked(onInspectGeneratedCertificate).mock.calls[0][0];
+    expect(inspectedCertificate.name).toBe('certificate.pem');
+    expect(await inspectedCertificate.text()).toContain('BEGIN CERTIFICATE');
+    expect(api.createSelfSigned).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a download error without generating the certificate again', async () => {
+    vi.mocked(api.createSelfSigned).mockResolvedValue(certificateResponse);
+    mountCreatePage();
+    addIdentity();
+    enterExportPassphrase();
+    fireEvent.click(screen.getByTestId('button-continue'));
+    fireEvent.click(screen.getByTestId('button-generate'));
+    await waitFor(() => expect(screen.getByTestId('panel-generated-result')).toBeTruthy());
+    vi.mocked(downloadBase64).mockImplementationOnce(() => {
+      throw new Error('browser refused download');
+    });
+
+    fireEvent.click(screen.getByTestId('button-download-certificate'));
+
+    expect(screen.getByRole('alert').textContent).toContain('Could not start');
+    expect(screen.getByTestId('panel-generated-result')).toBeTruthy();
+    expect(api.createSelfSigned).toHaveBeenCalledTimes(1);
   });
 
   it('encodes imported key bytes and clears all sensitive fields after an API error', async () => {

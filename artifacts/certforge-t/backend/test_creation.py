@@ -3,17 +3,24 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
+import io
 import json
+import logging
+import shutil
+import subprocess
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
+from api_errors import WorkbenchError
+from creation_operations import verify_certificate_key_pair
 import main
 from crypto_operations import public_key_bytes
 
@@ -155,6 +162,139 @@ def test_self_signed_certificate_profiles_and_encrypted_keys(
     ]
     assert result["inspection"]["not_before"] == certificate.not_valid_before_utc.isoformat()
     assert result["inspection"]["not_after"] == certificate.not_valid_after_utc.isoformat()
+
+
+def test_certificate_zip_contains_pem_certificate_and_encrypted_matching_key() -> None:
+    response = client.post(
+        "/certforge-api/certificates/self-signed",
+        json=_self_signed_request(),
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    archive_bytes = _decode_file(result["archive"])
+
+    assert result["archive"]["filename"] == "certificate-and-private-key.zip"
+    assert result["archive"]["media_type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        assert archive.namelist() == [
+            "certificate.pem",
+            "private-key.encrypted.pem",
+        ]
+        certificate_pem = archive.read("certificate.pem")
+        encrypted_private_key = archive.read("private-key.encrypted.pem")
+
+    assert certificate_pem.startswith(b"-----BEGIN CERTIFICATE-----")
+    certificate = x509.load_pem_x509_certificate(certificate_pem)
+    assert encrypted_private_key.startswith(b"-----BEGIN ENCRYPTED PRIVATE KEY-----")
+    private_key = serialization.load_pem_private_key(
+        encrypted_private_key,
+        password=_OUTPUT_PASSPHRASE.encode(),
+    )
+    assert public_key_bytes(certificate.public_key()) == public_key_bytes(
+        private_key.public_key()
+    )
+    with pytest.raises(ValueError):
+        serialization.load_pem_private_key(
+            encrypted_private_key,
+            password=b"incorrect-output-passphrase",
+        )
+    assert _OUTPUT_PASSPHRASE.encode() not in archive_bytes
+
+    inspected_response = client.post(
+        "/certforge-api/certificates/inspect",
+        files={"certificate_file": ("certificate.pem", certificate_pem, "application/x-pem-file")},
+    )
+    assert inspected_response.status_code == 200, inspected_response.text
+    inspected = inspected_response.json()
+    for field in (
+        "subject",
+        "issuer",
+        "serial_number",
+        "not_before",
+        "not_after",
+        "sha256_fingerprint",
+    ):
+        assert inspected[field] == result["inspection"][field]
+
+    openssl = shutil.which("openssl")
+    if openssl:
+        openssl_result = subprocess.run(
+            [openssl, "x509", "-noout", "-subject", "-issuer", "-dates"],
+            input=certificate_pem,
+            capture_output=True,
+            check=True,
+        )
+        assert b"subject=" in openssl_result.stdout
+        assert b"issuer=" in openssl_result.stdout
+
+
+def test_der_certificate_generation_also_returns_pem_for_download_and_zip() -> None:
+    response = client.post(
+        "/certforge-api/certificates/self-signed",
+        json=_self_signed_request(certificate_format="DER"),
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+
+    assert result["certificate"]["filename"] == "certificate.der"
+    assert result["certificate_pem"]["filename"] == "certificate.pem"
+    certificate_der = _decode_file(result["certificate"])
+    certificate_pem = _decode_file(result["certificate_pem"])
+    assert not certificate_der.startswith(b"-----BEGIN")
+    assert certificate_pem.startswith(b"-----BEGIN CERTIFICATE-----")
+    der_certificate = x509.load_der_x509_certificate(certificate_der)
+    pem_certificate = x509.load_pem_x509_certificate(certificate_pem)
+    assert der_certificate.fingerprint(hashes.SHA256()) == pem_certificate.fingerprint(
+        hashes.SHA256()
+    )
+
+    with zipfile.ZipFile(io.BytesIO(_decode_file(result["archive"]))) as archive:
+        assert archive.read("certificate.pem") == certificate_pem
+
+
+def test_certificate_private_key_mismatch_raises_structured_error() -> None:
+    certificate_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
+    unrelated_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
+    now = datetime.now(timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mismatch.example.test")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(certificate_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(certificate_key, hashes.SHA256())
+    )
+
+    with pytest.raises(WorkbenchError) as error:
+        verify_certificate_key_pair(certificate, unrelated_key)
+
+    assert error.value.status_code == 500
+    assert error.value.code == "certificate_key_mismatch"
+    assert "private key" in error.value.message
+
+
+def test_certificate_generation_does_not_log_key_artifacts_or_passphrase(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG):
+        response = client.post(
+            "/certforge-api/certificates/self-signed",
+            json=_self_signed_request(),
+        )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["private_key"]["content_base64"] not in caplog.text
+    assert result["archive"]["content_base64"] not in caplog.text
+    assert _OUTPUT_PASSPHRASE not in caplog.text
 
 
 @pytest.mark.parametrize(("algorithm", "output_format"), [("RSA-2048", "DER"), ("Ed25519", "PEM")])

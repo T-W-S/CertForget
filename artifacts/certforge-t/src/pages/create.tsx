@@ -1,6 +1,8 @@
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   AlertTriangle,
+  Archive,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -27,6 +29,7 @@ import {
   formatBytes,
   type CertificatePurpose,
   type CertificateSubjectRequest,
+  type BinaryResponse,
   type GeneratedCertificateResponse,
   type GeneratedCsrResponse,
   type KeyAlgorithm,
@@ -46,8 +49,12 @@ type ValidationTarget =
   | 'not_before'
   | 'not_after';
 type SubjectForm = { [Key in keyof CertificateSubjectRequest]: string };
+type DownloadStatus = {
+  state: 'loading' | 'success' | 'error';
+  message: string;
+};
 type SafeResult =
-  | { kind: 'certificate'; inspection: GeneratedCertificateResponse['inspection']; verified: boolean }
+  | { kind: 'certificate'; inspection: GeneratedCertificateResponse['inspection']; verified: boolean; hasDer: boolean }
   | { kind: 'csr'; subject: string; publicKeyAlgorithm: string; publicKeyFingerprint: string; signatureAlgorithm: string; sans: string[]; extensions: GeneratedCsrResponse['requested_extensions']; verified: boolean; filename: string; size: number; copyable: boolean };
 
 const steps = ['Identity', 'Key & validity', 'Review'];
@@ -113,16 +120,26 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
   const [validationTarget, setValidationTarget] = useState<ValidationTarget | null>(null);
   const [serverError, setServerError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null);
   const [result, setResult] = useState<SafeResult | null>(null);
-  const publicCertificateRef = useRef<GeneratedCertificateResponse['certificate'] | null>(null);
+  const publicCertificateRef = useRef<BinaryResponse | null>(null);
+  const derCertificateRef = useRef<BinaryResponse | null>(null);
+  const privateKeyDownloadRef = useRef<BinaryResponse | null>(null);
+  const certificateArchiveRef = useRef<BinaryResponse | null>(null);
+  const csrDownloadRef = useRef<BinaryResponse | null>(null);
   const csrCopyRef = useRef<GeneratedCsrResponse['csr'] | null>(null);
 
   const clearFeedback = () => {
     setFieldError('');
     setValidationTarget(null);
     setServerError('');
+    setDownloadStatus(null);
     setResult(null);
     publicCertificateRef.current = null;
+    derCertificateRef.current = null;
+    privateKeyDownloadRef.current = null;
+    certificateArchiveRef.current = null;
+    csrDownloadRef.current = null;
     csrCopyRef.current = null;
   };
 
@@ -221,7 +238,14 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
     if (loading || !validateStep(1)) return;
     setFieldError('');
     setServerError('');
+    setDownloadStatus(null);
     setResult(null);
+    publicCertificateRef.current = null;
+    derCertificateRef.current = null;
+    privateKeyDownloadRef.current = null;
+    certificateArchiveRef.current = null;
+    csrDownloadRef.current = null;
+    csrCopyRef.current = null;
     setLoading(true);
     let privateKeyBase64: string | undefined;
     try {
@@ -260,18 +284,28 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
           certificate_format: format,
         };
         const response = await api.createSelfSigned(body);
-        downloadBase64(response.certificate);
-        downloadBase64(response.private_key);
-        publicCertificateRef.current = response.certificate;
+        const certificatePem = response.certificate.filename.toLowerCase().endsWith('.pem')
+          ? response.certificate
+          : response.certificate_pem;
+        if (!certificatePem || !certificatePem.filename.toLowerCase().endsWith('.pem')) {
+          throw new Error('The certificate service did not return a PEM X.509 certificate.');
+        }
+        publicCertificateRef.current = certificatePem;
+        derCertificateRef.current = response.certificate.filename.toLowerCase().endsWith('.der')
+          ? response.certificate
+          : null;
+        privateKeyDownloadRef.current = response.private_key;
+        certificateArchiveRef.current = response.archive;
         setResult({
           kind: 'certificate',
           inspection: response.inspection,
           verified: response.self_signature_verified,
+          hasDer: derCertificateRef.current !== null,
         });
       } else {
         const response = await api.generateCsr({ ...base, csr_format: format });
-        downloadBase64(response.csr);
-        downloadBase64(response.private_key);
+        csrDownloadRef.current = response.csr;
+        privateKeyDownloadRef.current = response.private_key;
         csrCopyRef.current = format === 'PEM' ? response.csr : null;
         setResult({
           kind: 'csr',
@@ -290,6 +324,10 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
     } catch (requestError) {
       setServerError(requestError instanceof Error ? requestError.message : 'The request could not be completed by the certificate service.');
       publicCertificateRef.current = null;
+      derCertificateRef.current = null;
+      privateKeyDownloadRef.current = null;
+      certificateArchiveRef.current = null;
+      csrDownloadRef.current = null;
       csrCopyRef.current = null;
     } finally {
       privateKeyBase64 = undefined;
@@ -298,6 +336,32 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
       setExportPassphrase('');
       setConfirmPassphrase('');
       setLoading(false);
+    }
+  };
+
+  const downloadGeneratedFile = (file: BinaryResponse | null, label: string) => {
+    if (!file) {
+      setDownloadStatus({
+        state: 'error',
+        message: `${label} is unavailable. Generate the artifact again to restore it.`,
+      });
+      return;
+    }
+
+    flushSync(() => {
+      setDownloadStatus({ state: 'loading', message: `Preparing ${file.filename}…` });
+    });
+    try {
+      downloadBase64(file);
+      setDownloadStatus({
+        state: 'success',
+        message: `${file.filename} download started. Check your browser's downloads.`,
+      });
+    } catch {
+      setDownloadStatus({
+        state: 'error',
+        message: `Could not start the ${file.filename} download. Try again.`,
+      });
     }
   };
 
@@ -434,10 +498,22 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
               />
               {fieldError && <FieldError>{fieldError}</FieldError>}
               {serverError && <ErrorNotice message={serverError} />}
-              {loading && <div className="rounded-xl border border-violet-300/15 bg-violet-300/[0.045] p-3 text-[11px] text-violet-100/80" role="status" data-testid="status-progress">Generating on your certificate service. Files will download when the operation completes.</div>}
-              {result && <ResultPanel result={result} onInspect={inspectGenerated} onCopyCsr={copyCsr} />}
+              {loading && <div className="rounded-xl border border-violet-300/15 bg-violet-300/[0.045] p-3 text-[11px] text-violet-100/80" role="status" data-testid="status-progress">Generating on your certificate service. Choose downloads after the result is ready.</div>}
+              {result && (
+                <ResultPanel
+                  result={result}
+                  downloadStatus={downloadStatus}
+                  onInspect={inspectGenerated}
+                  onCopyCsr={copyCsr}
+                  onDownloadCertificate={() => downloadGeneratedFile(publicCertificateRef.current, 'Certificate (.pem)')}
+                  onDownloadDer={() => downloadGeneratedFile(derCertificateRef.current, 'DER certificate')}
+                  onDownloadPrivateKey={() => downloadGeneratedFile(privateKeyDownloadRef.current, 'Encrypted private key')}
+                  onDownloadBundle={() => downloadGeneratedFile(certificateArchiveRef.current, 'Certificate and private key ZIP')}
+                  onDownloadCsr={() => downloadGeneratedFile(csrDownloadRef.current, 'CSR')}
+                />
+              )}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
-                <button type="button" onClick={() => { setFieldError(''); setValidationTarget(null); setServerError(''); setResult(null); setStep(1); }} className="secondary-button min-h-10 px-3 text-[11px]" disabled={loading} data-testid="button-edit-request"><ArrowLeft size={14} />Edit request</button>
+                <button type="button" onClick={() => { setFieldError(''); setValidationTarget(null); setServerError(''); setDownloadStatus(null); setResult(null); publicCertificateRef.current = null; derCertificateRef.current = null; privateKeyDownloadRef.current = null; certificateArchiveRef.current = null; csrDownloadRef.current = null; csrCopyRef.current = null; setStep(1); }} className="secondary-button min-h-10 px-3 text-[11px]" disabled={loading} data-testid="button-edit-request"><ArrowLeft size={14} />Edit request</button>
                 <button type="submit" disabled={loading} className="primary-button min-h-10 px-4 text-[12px]" data-testid="button-generate">
                   {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <WandSparkles size={15} />}
                   {loading ? 'Generating securely…' : mode === 'certificate' ? 'Generate certificate' : 'Generate CSR'}
@@ -452,8 +528,8 @@ export default function CreatePage({ onInspectGeneratedCertificate }: { onInspec
             <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-violet-200/75">Key handling</p>
             <h2 className="mt-1.5 font-display text-lg font-semibold text-[#ebe9f3]">Sensitive by design.</h2>
             <div className="mt-4 space-y-3">
-              <SecurityPoint icon={<LockKeyhole size={14} />} text="Private keys and passphrases stay in memory only for the request." />
-              <SecurityPoint icon={<Download size={14} />} text="Generated artifacts download directly. Private-key contents are never rendered." />
+              <SecurityPoint icon={<LockKeyhole size={14} />} text="Key generation and passphrase handling stay on the configured certificate service." />
+              <SecurityPoint icon={<Download size={14} />} text="Only the encrypted private-key export is returned to this browser; key contents are never rendered." />
               <SecurityPoint icon={<KeyRound size={14} />} text="Downloaded private keys are encrypted with your export passphrase." />
             </div>
           </section>
@@ -607,8 +683,9 @@ function KeyValidityStep(props: {
         </div>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <label className="block text-[12px] font-medium text-[#d7d4e1]">{props.mode === 'certificate' ? 'Certificate format' : 'CSR format'}
-          <select value={props.format} onChange={(event) => props.setFormat(event.target.value as 'PEM' | 'DER')} className="field-select mt-2 text-[12px]" data-testid="select-output-format"><option value="PEM">PEM</option><option value="DER">DER</option></select>
+        <label className="block text-[12px] font-medium text-[#d7d4e1]">{props.mode === 'certificate' ? 'Certificate downloads' : 'CSR format'}
+          <select value={props.format} onChange={(event) => props.setFormat(event.target.value as 'PEM' | 'DER')} className="field-select mt-2 text-[12px]" data-testid="select-output-format"><option value="PEM">PEM</option><option value="DER">{props.mode === 'certificate' ? 'PEM and DER' : 'DER'}</option></select>
+          {props.mode === 'certificate' && <span className="mt-1 block text-[11px] font-normal text-[#888597]">PEM is always available. Select PEM and DER to add a DER download.</span>}
         </label>
         <div className="hidden sm:block" />
         <SecretInput label="Private-key export passphrase" value={props.exportPassphrase} onChange={props.setExportPassphrase} placeholder="Required to encrypt downloaded key" testId="input-export-passphrase" error={props.validationTarget === 'export_passphrase' ? props.fieldError : undefined} />
@@ -641,7 +718,7 @@ function ReviewPanel(props: { mode: BuildMode; subject: SubjectForm; sans: Subje
         <ReviewBlock title="Artifact" value={props.mode === 'certificate' ? 'Self-signed X.509 certificate' : 'PKCS#10 certificate signing request'} />
         <ReviewBlock title="Subject" value={subjectText(props.subject)} />
         <ReviewBlock title="Key source" value={props.keySource === 'generate' ? `Generate · ${props.algorithm}` : `Import · ${props.importedKeyName || 'private key selected'}`} />
-        <ReviewBlock title="Purpose and encoding" value={`${purposeLabel(props.purpose)} · ${props.format}`} />
+        <ReviewBlock title="Purpose and encoding" value={`${purposeLabel(props.purpose)} · ${props.mode === 'certificate' && props.format === 'DER' ? 'PEM + DER' : props.format}`} />
         <ReviewBlock title="Signature algorithm" value={signatureAlgorithm} />
         <ReviewBlock title="Key usage" value={keyUsage} />
         <ReviewBlock title="Extended key usage" value={extendedKeyUsage} />
@@ -651,19 +728,39 @@ function ReviewPanel(props: { mode: BuildMode; subject: SubjectForm; sans: Subje
       </div>
       <div className="rounded-xl border border-white/[0.055] bg-[#14151f]/70 p-3.5">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#858294]">What happens next</p>
-        <p className="mt-1.5 text-[11px] leading-5 text-[#a09cad]">The public {props.mode === 'certificate' ? 'certificate' : 'CSR'} and encrypted private key will download to this device. Private-key contents are not shown or retained in the result panel.</p>
+        <p className="mt-1.5 text-[11px] leading-5 text-[#a09cad]">After generation, choose which files to download. The encrypted private-key export requires the passphrase you entered. Private-key contents are never shown in the result panel.</p>
       </div>
     </div>
   );
 }
 
-function ResultPanel({ result, onInspect, onCopyCsr }: { result: SafeResult; onInspect: () => void; onCopyCsr: () => void }) {
+function ResultPanel({
+  result,
+  downloadStatus,
+  onInspect,
+  onCopyCsr,
+  onDownloadCertificate,
+  onDownloadDer,
+  onDownloadPrivateKey,
+  onDownloadBundle,
+  onDownloadCsr,
+}: {
+  result: SafeResult;
+  downloadStatus: DownloadStatus | null;
+  onInspect: () => void;
+  onCopyCsr: () => void;
+  onDownloadCertificate: () => void;
+  onDownloadDer: () => void;
+  onDownloadPrivateKey: () => void;
+  onDownloadBundle: () => void;
+  onDownloadCsr: () => void;
+}) {
   if (result.kind === 'certificate') {
     const inspection = result.inspection;
     return (
       <section className="rounded-xl border border-emerald-300/[0.13] bg-emerald-300/[0.025] p-4" data-testid="panel-generated-result">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-emerald-200/80">Certificate created</p><h3 className="mt-1 font-display text-[15px] font-semibold text-[#e7e4ef]">Files downloaded</h3><p className="mt-1 text-[10px] text-[#9290a0]">{inspection.subject} · {inspection.public_key_algorithm}{inspection.public_key_size ? ` · ${inspection.public_key_size} bit` : ''}</p></div>
+          <div><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-emerald-200/80">Certificate created</p><h3 className="mt-1 font-display text-[15px] font-semibold text-[#e7e4ef]">Certificate ready to download</h3><p className="mt-1 text-[10px] text-[#9290a0]">{inspection.subject} · {inspection.public_key_algorithm}{inspection.public_key_size ? ` · ${inspection.public_key_size} bit` : ''}</p></div>
           <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${result.verified ? 'border-emerald-300/20 bg-emerald-300/[0.06] text-emerald-200' : 'border-amber-300/20 bg-amber-300/[0.06] text-amber-100'}`}>{result.verified ? 'Self-signature verified' : 'Self-signature not verified'}</span>
         </div>
         <div className="mt-3 grid gap-x-5 sm:grid-cols-2"><Metadata label="Issuer" value={inspection.issuer} /><Metadata label="Serial number" value={inspection.serial_number} /><Metadata label="Signature" value={inspection.signature_algorithm} /><Metadata label="Public key" value={`${inspection.public_key_algorithm}${inspection.public_key_size ? ` · ${inspection.public_key_size} bit` : ''}`} /><Metadata label="Valid from" value={inspection.not_before} /><Metadata label="Expires" value={inspection.not_after} /></div>
@@ -672,14 +769,25 @@ function ResultPanel({ result, onInspect, onCopyCsr }: { result: SafeResult; onI
           <p className="mt-1.5 text-[10px] leading-5 text-[#a09cad]">Key usage: {inspection.extensions.key_usage.join(', ') || 'none'}<br />Extended key usage: {inspection.extensions.extended_key_usage.join(', ') || 'none'}<br />Basic constraints: {inspection.extensions.basic_constraints || 'none'}<br />Subject key identifier: {inspection.extensions.subject_key_identifier || 'none'}<br />Authority key identifier: {inspection.extensions.authority_key_identifier || 'none'}</p>
         </div>
         <p className="mt-3 flex items-start gap-2 text-[10px] leading-5 text-amber-100/75"><AlertTriangle size={13} className="mt-0.5 shrink-0" />A valid self-signature does not establish trust. Configure trust on clients or obtain a certificate from a trusted CA.</p>
-        <button type="button" onClick={onInspect} className="secondary-button mt-3 min-h-9 px-3 text-[10px]" data-testid="button-inspect-generated"><Fingerprint size={13} />Open in certificate inspector</button>
+        <div className="mt-4 border-t border-white/[0.06] pt-4">
+          <h4 className="font-display text-[15px] font-semibold text-[#e7e4ef]">Generated files</h4>
+          <p className="mt-1 text-[12px] leading-5 text-[#9996a8]">Choose a download. The private-key export is encrypted with your export passphrase; the passphrase is not included.</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <DownloadAction icon={<Download size={15} />} label="Download certificate (.pem)" description="Public X.509 certificate, ready for inspection." onClick={onDownloadCertificate} testId="button-download-certificate" />
+            {result.hasDer && <DownloadAction icon={<Download size={15} />} label="Download certificate (.der)" description="Binary DER encoding of the same certificate." onClick={onDownloadDer} testId="button-download-der" />}
+            <DownloadAction icon={<FileKey2 size={15} />} label="Download encrypted private key (.pem)" description="Requires the export passphrase you set in the wizard." onClick={onDownloadPrivateKey} testId="button-download-private-key" />
+            <DownloadAction icon={<Archive size={15} />} label="Download certificate and private key (.zip)" description="Contains certificate.pem and the encrypted private-key file." onClick={onDownloadBundle} testId="button-download-bundle" />
+          </div>
+          <DownloadFeedback status={downloadStatus} />
+        </div>
+        <button type="button" onClick={onInspect} className="secondary-button mt-3 min-h-10 px-3 text-[12px]" data-testid="button-inspect-generated"><Fingerprint size={15} />Open in certificate inspector</button>
       </section>
     );
   }
   return (
     <section className="rounded-xl border border-emerald-300/[0.13] bg-emerald-300/[0.025] p-4" data-testid="panel-generated-result">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-emerald-200/80">CSR created</p><h3 className="mt-1 font-display text-[15px] font-semibold text-[#e7e4ef]">Request downloaded</h3><p className="mt-1 text-[10px] text-[#9290a0]">{result.filename} · {formatBytes(result.size)}</p></div>
+        <div><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-emerald-200/80">CSR created</p><h3 className="mt-1 font-display text-[15px] font-semibold text-[#e7e4ef]">Request ready to download</h3><p className="mt-1 text-[10px] text-[#9290a0]">{result.filename} · {formatBytes(result.size)}</p></div>
         <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${result.verified ? 'border-emerald-300/20 bg-emerald-300/[0.06] text-emerald-200' : 'border-amber-300/20 bg-amber-300/[0.06] text-amber-100'}`}>{result.verified ? 'Signature verified' : 'Signature not verified'}</span>
       </div>
       <div className="mt-3 grid gap-x-5 sm:grid-cols-2"><Metadata label="Subject" value={result.subject} /><Metadata label="Public key" value={result.publicKeyAlgorithm} /><Metadata label="Signature" value={result.signatureAlgorithm} /><Metadata label="Public-key fingerprint" value={result.publicKeyFingerprint} /><Metadata label="Requested SANs" value={result.sans.join(', ') || 'none'} /></div>
@@ -688,9 +796,39 @@ function ResultPanel({ result, onInspect, onCopyCsr }: { result: SafeResult; onI
         <p className="mt-1.5 text-[10px] leading-5 text-[#a09cad]">Key usage: {result.extensions.key_usage.join(', ') || 'none'}<br />Extended key usage: {result.extensions.extended_key_usage.join(', ') || 'none'}<br />Basic constraints: {result.extensions.basic_constraints || 'none'}<br />Subject key identifier: {result.extensions.subject_key_identifier || 'none'}<br />Authority key identifier: {result.extensions.authority_key_identifier || 'none'}</p>
       </div>
       <p className="mt-3 text-[10px] leading-5 text-amber-100/75">This CSR is a request, not a certificate. Send it to a certificate authority; the CA must issue a certificate before it can be used for authentication.</p>
-      <button type="button" onClick={onCopyCsr} className="secondary-button mt-3 min-h-9 px-3 text-[10px]" disabled={!result.copyable} data-testid="button-copy-csr"><Clipboard size={13} />Copy CSR PEM</button>
+      <div className="mt-4 border-t border-white/[0.06] pt-4">
+        <h4 className="font-display text-[15px] font-semibold text-[#e7e4ef]">Generated files</h4>
+        <p className="mt-1 text-[12px] leading-5 text-[#9996a8]">The private-key export is encrypted with your export passphrase; the passphrase is not included.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <DownloadAction icon={<Download size={15} />} label={`Download CSR (.${result.filename.toLowerCase().endsWith('.der') ? 'der' : 'pem'})`} description="The certificate signing request you can submit to a CA." onClick={onDownloadCsr} testId="button-download-csr" />
+          <DownloadAction icon={<FileKey2 size={15} />} label="Download encrypted private key (.pem)" description="Requires the export passphrase you set in the wizard." onClick={onDownloadPrivateKey} testId="button-download-private-key" />
+        </div>
+        <DownloadFeedback status={downloadStatus} />
+      </div>
+      <button type="button" onClick={onCopyCsr} className="secondary-button mt-3 min-h-10 px-3 text-[12px]" disabled={!result.copyable} data-testid="button-copy-csr"><Clipboard size={15} />Copy CSR PEM</button>
     </section>
   );
+}
+
+function DownloadAction({ icon, label, description, onClick, testId }: { icon: ReactNode; label: string; description: string; onClick: () => void; testId: string }) {
+  return (
+    <div className="rounded-lg border border-white/[0.055] bg-[#14151f]/60 p-3">
+      <button type="button" onClick={onClick} className="secondary-button min-h-10 w-full justify-start px-3 text-left text-[12px]" data-testid={testId}>
+        {icon}<span>{label}</span>
+      </button>
+      <p className="mt-2 text-[11px] leading-5 text-[#888597]">{description}</p>
+    </div>
+  );
+}
+
+function DownloadFeedback({ status }: { status: DownloadStatus | null }) {
+  if (!status) return null;
+  const tone = status.state === 'error'
+    ? 'border-rose-300/15 bg-rose-300/[0.04] text-rose-100/90'
+    : status.state === 'success'
+      ? 'border-emerald-300/15 bg-emerald-300/[0.04] text-emerald-100/90'
+      : 'border-violet-300/15 bg-violet-300/[0.04] text-violet-100/90';
+  return <p className={`mt-3 rounded-lg border px-3 py-2 text-[12px] ${tone}`} role={status.state === 'error' ? 'alert' : 'status'} aria-live="polite" data-testid="download-status">{status.message}</p>;
 }
 
 function TrustNote({ icon, title, copy }: { icon: ReactNode; title: string; copy: string }) {

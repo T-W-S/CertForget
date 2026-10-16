@@ -316,7 +316,9 @@ class Pkcs12ImportResponse(BaseModel):
 
 class GeneratedCertificateResponse(BaseModel):
     certificate: FileOutput
+    certificate_pem: FileOutput | None = None
     private_key: FileOutput
+    archive: FileOutput
     inspection: CertificateInspectionResponse
     self_signature_verified: bool
 

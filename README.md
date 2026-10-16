@@ -34,10 +34,13 @@ generated results.
   2048/3072/4096, ECDSA P-256/P-384, or Ed25519 keys, or import a supported
   private key. Add DNS, IP, email, and URI SANs; choose TLS server/client,
   S/MIME, or general-purpose extensions; and choose PEM or DER output.
+- Certificate results provide separate PEM, optional DER, encrypted-key, and
+  in-memory ZIP downloads. The certificate inspector receives the PEM
+  certificate directly; downloads never re-run certificate generation.
 - Exported private keys are PKCS#8 PEM encrypted with the user-selected
-  passphrase. The app does not display or retain private-key contents. A
-  self-signature does not make a certificate trusted, and a CSR is not an
-  issued certificate.
+  passphrase. Unencrypted private-key contents are never displayed or
+  persisted. A self-signature does not make a certificate trusted, and a CSR
+  is not an issued certificate.
 - Export matching certificate/key pairs to PKCS#12/PFX, or import PFX files
   and download the contained certificate, chain certificates, and private key.
 - See the fixed OpenSSL command templates used for supported actions. The

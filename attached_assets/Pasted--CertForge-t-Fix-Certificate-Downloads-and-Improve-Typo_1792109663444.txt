@@ -1,0 +1,286 @@
+# CertForge_t — Fix Certificate Downloads and Improve Typography
+
+## Context
+
+Continue working on the existing CertForge_t project. Do not create a new application or replace the current implementation.
+
+The self-signed certificate generation workflow appears to generate a valid X.509 certificate. The result screen displays the certificate details, including its subject, issuer, serial number, validity, public-key algorithm, extensions and successful self-signature verification status.
+
+The "Open in certificate inspector" button also opens the correct certificate.
+
+However, there is a download bug.
+
+After clicking "Generate certificate" on the final review screen, the browser offers a download named:
+
+`private-key.encrypted.pem`
+
+This appears to download only the encrypted private key rather than the X.509 certificate. When this file is uploaded to the certificate inspector, it reports:
+
+"The operation could not be completed. The uploaded file is not a valid PEM or DER X.509 certificate."
+
+The application must be fixed so that users can reliably download the actual certificate, the encrypted private key, or both together.
+
+I would also like the application fonts to be slightly larger throughout the interface, without changing the overall design.
+
+## 1. Investigate the existing implementation first
+
+Trace the complete self-signed certificate generation and download workflow:
+
+1. The frontend certificate wizard.
+2. The request sent to the backend.
+3. The backend certificate and private-key generation.
+4. The API response schema and content types.
+5. The frontend success handler.
+6. The browser download logic.
+7. The "Open in certificate inspector" action.
+8. Any shared file-download or certificate-export utilities.
+
+Determine exactly why the browser receives or downloads the encrypted private key when the user expects a certificate.
+
+Do not assume the backend generation is broken simply because the downloaded file is incorrect. The displayed certificate metadata and inspector behaviour suggest that a valid certificate may already exist in the application state.
+
+Check whether the response contains the certificate and key as separate fields, whether the frontend selects the wrong field, whether a filename or MIME type is incorrect, or whether a shared download helper is being reused incorrectly.
+
+Fix the underlying cause rather than hiding the symptom.
+
+## 2. Correct certificate and private-key downloads
+
+Implement explicit, separate download actions on the successful certificate-generation result screen.
+
+### A. Download certificate
+
+Add a clearly labelled button:
+
+**Download certificate (.pem)**
+
+This must download the actual X.509 certificate in PEM format.
+
+The downloaded file must:
+- Have a filename such as `certificate.pem`.
+- Contain a valid PEM-encoded X.509 certificate.
+- Begin with `-----BEGIN CERTIFICATE-----`.
+- Parse successfully in the existing CertForge_t certificate inspector.
+- Be independently inspectable using OpenSSL.
+- Contain the certificate corresponding to the displayed result.
+
+Where supported, provide an additional option to download the certificate as DER, named `certificate.der`.
+
+### B. Download encrypted private key
+
+Add a separate button:
+
+**Download encrypted private key (.pem)**
+
+This must download the corresponding private key using the application's existing secure encrypted-key export mechanism.
+
+The downloaded file must:
+- Have a suitable filename, such as `private-key.encrypted.pem`.
+- Contain an encrypted private key, not a certificate.
+- Use a supported encryption format and mechanism.
+- Be accompanied by clear instructions for the passphrase required to use it.
+
+Never expose private-key contents in the normal result panel, application logs or error messages.
+
+Do not silently switch to unencrypted private-key export.
+
+### C. Download both files together
+
+Add a third option:
+
+**Download certificate and private key (.zip)**
+
+Create a ZIP archive containing two distinct files:
+
+- `certificate.pem`
+- `private-key.encrypted.pem`
+
+The certificate must remain a normal, publicly readable X.509 certificate. The private key must remain encrypted.
+
+Do not include passwords, passphrases, application configuration files or unrelated data in the archive.
+
+Generate the archive securely, use safe filenames, and clean up any temporary files after the download operation.
+
+If ZIP export would introduce unnecessary complexity, implement the two separate download buttons first and explain the limitation. Do not leave the incorrect download behaviour in place.
+
+## 3. Ensure the certificate and private key match
+
+Before making the download options available, verify that the generated certificate contains the public key corresponding to the private key being exported.
+
+Use cryptographic public-key comparison, not filenames or PEM text comparison.
+
+If the certificate and private key do not match, do not offer the result as a successful certificate generation.
+
+Return a structured error and clean up any temporary sensitive files.
+
+Preserve the existing certificate-generation flow and its displayed certificate metadata.
+
+## 4. Fix certificate inspector integration
+
+The "Open in certificate inspector" button must continue to open the actual generated certificate.
+
+It must not:
+- Pass the encrypted private-key PEM to the certificate inspector.
+- Reuse the wrong result field.
+- Depend on a manually downloaded file being uploaded again.
+- Accidentally expose the private key to the inspector.
+
+Where possible, pass the certificate through the existing application state or supported navigation mechanism.
+
+Keep normal certificate upload functionality unchanged.
+
+Verify the following workflow through automated tests where feasible:
+
+1. Generate a self-signed certificate.
+2. Download the certificate.
+3. Open the downloaded certificate in the inspector.
+4. Confirm that the displayed subject, issuer, serial number, fingerprint and validity match the generation result.
+5. Download the encrypted private key separately.
+6. Confirm that the key is encrypted and can be loaded with the correct passphrase.
+7. Confirm that the public key derived from the private key matches the certificate's public key.
+
+## 5. Improve the result screen
+
+Keep the existing visual design, dark-purple theme, rounded cards, subtle glass effects and layout.
+
+Improve the result screen so that the generated artefacts are obvious.
+
+Add a section titled:
+
+**Generated files**
+
+Provide three clear actions:
+
+- Download certificate (.pem)
+- Download encrypted private key (.pem)
+- Download certificate and private key (.zip)
+
+Use suitable icons and concise descriptions.
+
+Clearly distinguish the certificate from the private key.
+
+Retain the existing certificate metadata, self-signature verification indicator, extensions and trust warning.
+
+Do not suggest that a valid self-signature automatically makes the certificate trusted.
+
+Provide appropriate loading, success and failure messages for downloads.
+
+Ensure repeated downloads work correctly and that download errors do not cause the certificate-generation operation to run again unnecessarily.
+
+## 6. Slightly increase font sizes throughout the application
+
+The current interface looks good, but some text is a little too small.
+
+Make a modest, consistent typography adjustment across the application, particularly:
+- Main page headings.
+- Section headings.
+- Body text.
+- Form labels.
+- Input text.
+- Helper text.
+- Result metadata.
+- Table and card text.
+- Buttons and navigation items.
+
+Suggested sizes:
+- Body text: approximately 15–16px where the current design uses smaller text.
+- Form labels: approximately 13–14px.
+- Secondary descriptions: approximately 13–14px.
+- Main headings: increase slightly only if needed.
+- Metadata and technical output: preferably at least 12–13px where practical.
+
+Treat these as guidelines rather than rigid values. Inspect the existing design tokens and adjust them consistently.
+
+Preserve the current hierarchy, spacing, visual balance and responsive behaviour. Avoid unnecessary scrolling or oversized elements.
+
+Prefer adjusting shared typography tokens and common components rather than adding unrelated font-size overrides to individual pages.
+
+Check the certificate wizard, result screen, inspector, key matching, format converter and dashboard.
+
+## 7. Security and privacy
+
+Preserve the existing security model.
+
+Requirements:
+- Private keys remain on the configured server.
+- Never send private keys or passphrases to third-party services.
+- Never persist sensitive material in browser storage.
+- Do not include private-key data in telemetry or logs.
+- Use restrictive permissions for temporary files.
+- Clean up temporary files on success and failure.
+- Validate filenames and prevent path traversal.
+- Enforce applicable upload and input size limits.
+- Avoid writing secret material to ordinary application metadata storage.
+- Clear passphrase fields after operations finish or fail.
+- Do not claim that data is processed only in memory if the implementation writes sensitive files to disk.
+- Ensure the UI accurately describes where private keys are processed and whether temporary files are used.
+
+Do not introduce unnecessary third-party network dependencies.
+
+## 8. Automated testing
+
+Add or update automated tests using the project's existing test framework.
+
+### Backend tests
+
+- Verify that the API returns the correct certificate and private-key artefacts.
+- Verify that the certificate parses as an X.509 certificate.
+- Verify that the encrypted private key can be decrypted with the correct passphrase.
+- Verify that an incorrect passphrase fails.
+- Verify that the certificate and private key match.
+- Verify that ZIP output contains the expected filenames and correct contents, if ZIP export is implemented.
+- Verify that private-key contents and passphrases are not logged.
+
+### Frontend tests
+
+- Verify that the certificate download button downloads the certificate, not the private key.
+- Verify that the private-key download button downloads the encrypted private key.
+- Verify that the ZIP button downloads the correct archive, if implemented.
+- Verify that the inspector action receives the certificate.
+- Verify that download errors are handled correctly.
+- Verify that existing certificate-generation functionality remains operational.
+
+### End-to-end validation
+
+Where the available development environment permits, generate a test certificate and validate the downloaded artefacts using OpenSSL.
+
+For example:
+
+`openssl x509 -in certificate.pem -noout -subject -issuer -dates`
+
+The encrypted private key should be recognised as a supported encrypted-key format and load with the correct passphrase.
+
+Do not run the certificate inspection command against the private-key file.
+
+Run the existing regression tests for certificate inspection, key matching, conversion and CSR generation.
+
+Report any tests that cannot be executed in the available environment.
+
+## 9. Preserve Docker configuration
+
+Preserve the existing Docker fixes already applied to the repository:
+
+- The root `pnpm-workspace.yaml` includes `allowBuilds: esbuild: true`.
+- The root `.dockerignore` excludes `.pnpm-store`.
+- `artifacts/certforge-t/Dockerfile.web` uses `FROM node:22-slim AS build`.
+
+Do not revert these changes.
+
+Do not attempt to build or run Docker containers within Replit. Docker verification will be performed separately in my own environment.
+
+You may inspect Dockerfiles and Compose configuration as source files to ensure your changes do not conflict with them, but do not claim that a Docker build or runtime test has passed.
+
+## 10. Completion report
+
+When finished, report:
+- The root cause of the incorrect download.
+- Files changed.
+- The new download actions.
+- How the certificate and private-key match is verified.
+- Typography changes made.
+- Tests executed and their actual results.
+- Any tests that could not be run.
+- Any remaining limitations.
+
+Keep the changes focused on the download bug and modest typography improvements. Do not redesign the application or introduce unrelated features.
+
+Implement the changes, run the available frontend and backend tests, fix any regressions, and provide a concise completion report.

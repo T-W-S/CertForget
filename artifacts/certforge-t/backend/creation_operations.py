@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import ipaddress
+from io import BytesIO
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
@@ -242,6 +245,20 @@ def _export_passphrase(request: CertificateCreationRequest) -> bytes:
     return request.private_key_export_passphrase.get_secret_value().encode("utf-8")
 
 
+def verify_certificate_key_pair(
+    certificate: x509.Certificate, private_key: Any
+) -> None:
+    if not hmac.compare_digest(
+        public_key_bytes(certificate.public_key()),
+        public_key_bytes(private_key.public_key()),
+    ):
+        raise WorkbenchError(
+            500,
+            "certificate_key_mismatch",
+            "The generated certificate does not match the exported private key.",
+        )
+
+
 def create_self_signed_certificate(
     request: SelfSignedCertificateRequest,
 ) -> GeneratedCertificateResponse:
@@ -273,20 +290,35 @@ def create_self_signed_certificate(
             "The generated certificate could not be verified.",
         ) from None
 
+    verify_certificate_key_pair(certificate, private_key)
+
     encoding = (
         serialization.Encoding.PEM
         if request.certificate_format == "PEM"
         else serialization.Encoding.DER
     )
     certificate_bytes = certificate.public_bytes(encoding)
+    certificate_pem_bytes = certificate.public_bytes(serialization.Encoding.PEM)
     private_key_bytes = _encrypt_private_key(private_key, _export_passphrase(request))
     inspection = inspect_certificate_content(certificate_bytes)
+    with BytesIO() as archive_buffer:
+        with ZipFile(archive_buffer, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr("certificate.pem", certificate_pem_bytes)
+            archive.writestr("private-key.encrypted.pem", private_key_bytes)
+        archive_bytes = archive_buffer.getvalue()
+
     return GeneratedCertificateResponse(
         certificate=file_response(
             f"certificate.{request.certificate_format.lower()}",
             certificate_bytes,
         ),
+        certificate_pem=(
+            None
+            if request.certificate_format == "PEM"
+            else file_response("certificate.pem", certificate_pem_bytes)
+        ),
         private_key=file_response("private-key.encrypted.pem", private_key_bytes),
+        archive=file_response("certificate-and-private-key.zip", archive_bytes),
         inspection=inspection,
         self_signature_verified=True,
     )

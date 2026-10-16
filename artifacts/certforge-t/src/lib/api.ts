@@ -80,7 +80,9 @@ export interface CertificateExtensionsResponse {
 
 export interface GeneratedCertificateResponse {
   certificate: BinaryResponse;
+  certificate_pem: BinaryResponse | null;
   private_key: BinaryResponse;
+  archive: BinaryResponse;
   inspection: InspectResponse;
   self_signature_verified: boolean;
 }

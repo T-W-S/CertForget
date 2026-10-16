@@ -308,6 +308,8 @@ def media_type_for(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix in {".p12", ".pfx"}:
         return "application/x-pkcs12"
+    if suffix == ".zip":
+        return "application/zip"
     if suffix == ".der":
         return "application/pkix-cert"
     if suffix == ".pem":
